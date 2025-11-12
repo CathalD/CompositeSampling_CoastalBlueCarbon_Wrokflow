@@ -51,7 +51,31 @@ if (has_automap) {
   log_message("automap not available - using manual fitting", "WARNING")
 }
 
+# Check for CAST (optional, for spatial CV and AOA)
+has_cast <- requireNamespace("CAST", quietly = TRUE)
+if (has_cast) {
+  library(CAST)
+  log_message("CAST package available - using spatial CV and AOA")
+} else {
+  log_message("CAST not available - using standard k-fold CV", "WARNING")
+}
+
 log_message("Packages loaded successfully")
+
+# ============================================================================
+# KRIGING METHOD OPTIONS
+# ============================================================================
+
+# Compare kriging methods (Ordinary vs Simple)
+# Set to TRUE to perform both and compare performance
+COMPARE_KRIGING_METHODS <- TRUE
+
+# Default kriging method if not comparing: "ordinary" or "simple"
+DEFAULT_KRIGING_METHOD <- "ordinary"
+
+log_message(sprintf("Kriging method comparison: %s",
+                   ifelse(COMPARE_KRIGING_METHODS, "Enabled (OK vs SK)",
+                         paste0("Disabled (", DEFAULT_KRIGING_METHOD, " only)"))))
 
 # Create output directories
 dir.create("outputs/predictions/kriging", recursive = TRUE, showWarnings = FALSE)
@@ -66,29 +90,133 @@ dir.create("diagnostics/crossvalidation", recursive = TRUE, showWarnings = FALSE
 
 log_message("Loading harmonized data...")
 
-# Check if spline harmonization has been run
-if (!file.exists("data_processed/cores_harmonized_spline_bluecarbon.rds")) {
-  stop("Spline-harmonized data not found. Run Module 03 first.")
+# Check if depth harmonization has been run
+if (!file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
+  stop("Harmonized data not found. Run Module 03 first.")
 }
 
-cores_harmonized <- readRDS("data_processed/cores_harmonized_spline_bluecarbon.rds")
+cores_harmonized <- readRDS("data_processed/cores_harmonized_bluecarbon.rds")
 
 log_message(sprintf("Loaded: %d predictions from %d cores",
                     nrow(cores_harmonized),
                     n_distinct(cores_harmonized$core_id)))
 
-# Filter to standard depths only
+# Load harmonization metadata
+harmonization_metadata <- NULL
+if (file.exists("data_processed/harmonization_metadata.rds")) {
+  harmonization_metadata <- readRDS("data_processed/harmonization_metadata.rds")
+  log_message(sprintf("Harmonization method: %s", harmonization_metadata$method))
+}
+
+# Load Module 01 QA data
+vm0033_compliance <- NULL
+if (file.exists("data_processed/vm0033_compliance.rds")) {
+  vm0033_compliance <- readRDS("data_processed/vm0033_compliance.rds")
+  log_message("Loaded VM0033 compliance data")
+}
+
+# Filter to standard depths only (VM0033 midpoints)
 cores_standard <- cores_harmonized %>%
   filter(depth_cm %in% STANDARD_DEPTHS)
 
-log_message(sprintf("Standard depths: %d predictions", nrow(cores_standard)))
+log_message(sprintf("VM0033 target depths: %s cm", paste(STANDARD_DEPTHS, collapse = ", ")))
+log_message(sprintf("Standard depth predictions: %d", nrow(cores_standard)))
 
 # Check for required columns
-required_cols <- c("core_id", "longitude", "latitude", "stratum", 
-                   "depth_cm", "soc_spline")
+required_cols <- c("core_id", "longitude", "latitude", "stratum",
+                   "depth_cm", "soc_harmonized")
 missing <- setdiff(required_cols, names(cores_standard))
 if (length(missing) > 0) {
   stop(sprintf("Missing required columns: %s", paste(missing, collapse = ", ")))
+}
+
+# Standardize core type names if present
+if ("core_type" %in% names(cores_standard) || "core_type_clean" %in% names(cores_standard)) {
+  if (!"core_type_clean" %in% names(cores_standard)) {
+    cores_standard <- cores_standard %>%
+      mutate(
+        core_type_clean = case_when(
+          tolower(core_type) %in% c("hr", "high-res", "high resolution", "high res") ~ "HR",
+          tolower(core_type) %in% c("paired composite", "paired comp", "paired") ~ "Paired Composite",
+          tolower(core_type) %in% c("unpaired composite", "unpaired comp", "unpaired", "composite", "comp") ~ "Unpaired Composite",
+          TRUE ~ ifelse(is.na(core_type), "Unknown", core_type)
+        )
+      )
+  }
+
+  log_message("Core type distribution:")
+  core_type_summary <- cores_standard %>%
+    distinct(core_id, core_type_clean) %>%
+    count(core_type_clean)
+  for (i in 1:nrow(core_type_summary)) {
+    log_message(sprintf("  %s: %d cores",
+                       core_type_summary$core_type_clean[i],
+                       core_type_summary$n[i]))
+  }
+}
+
+# ============================================================================
+# LOAD GEE STRATUM BOUNDARY MASKS
+# ============================================================================
+
+log_message("Loading GEE stratum boundary masks...")
+
+# Directory for GEE exported strata
+gee_strata_dir <- "data_raw/gee_strata"
+
+# Load stratum masks if available
+stratum_masks <- list()
+
+if (dir.exists(gee_strata_dir)) {
+  # Expected GEE export file patterns
+  # Normalize stratum names to match file naming conventions
+  stratum_file_map <- c(
+    "Upper Marsh" = "upper_marsh.tif",
+    "Mid Marsh" = "mid_marsh.tif",
+    "Lower Marsh" = "lower_marsh.tif",
+    "Underwater Vegetation" = "underwater_vegetation.tif",
+    "Open Water" = "open_water.tif"
+  )
+
+  for (stratum_name in names(stratum_file_map)) {
+    file_path <- file.path(gee_strata_dir, stratum_file_map[stratum_name])
+
+    if (file.exists(file_path)) {
+      mask_rast <- tryCatch({
+        r <- rast(file_path)
+
+        # Reproject to processing CRS if needed
+        if (st_crs(r)$input != paste0("EPSG:", PROCESSING_CRS)) {
+          r <- project(r, paste0("EPSG:", PROCESSING_CRS), method = "near")
+        }
+
+        # Binary mask: 1 = inside stratum, 0/NA = outside
+        r[r == 0] <- NA
+
+        r
+      }, error = function(e) {
+        log_message(sprintf("  Failed to load %s: %s", stratum_name, e$message), "WARNING")
+        NULL
+      })
+
+      if (!is.null(mask_rast)) {
+        stratum_masks[[stratum_name]] <- mask_rast
+        log_message(sprintf("  Loaded: %s (%d x %d cells)",
+                           stratum_name,
+                           ncol(mask_rast),
+                           nrow(mask_rast)))
+      }
+    }
+  }
+
+  if (length(stratum_masks) > 0) {
+    log_message(sprintf("Loaded %d stratum boundary masks from GEE", length(stratum_masks)))
+  } else {
+    log_message("No GEE stratum masks found - predictions will use buffered extent", "WARNING")
+  }
+} else {
+  log_message(sprintf("GEE strata directory not found: %s", gee_strata_dir), "WARNING")
+  log_message("Predictions will use buffered extent without stratum masks", "WARNING")
 }
 
 # ============================================================================
@@ -189,10 +317,94 @@ fit_variogram_auto <- function(sp_data, formula, cutoff = NULL) {
 #' @param sp_data Spatial data
 #' @param formula Formula for kriging
 #' @param vgm_model Variogram model
+#' @param use_spatial_cv Use CAST spatial CV (if available)
 #' @return CV results
-crossvalidate_kriging <- function(sp_data, formula, vgm_model) {
-  
+crossvalidate_kriging <- function(sp_data, formula, vgm_model, use_spatial_cv = TRUE) {
+
   tryCatch({
+
+    # Use CAST spatial CV if available
+    if (use_spatial_cv && has_cast && length(sp_data) >= 10) {
+      log_message("    Using CAST spatial cross-validation...")
+
+      # Convert sp to sf for CAST
+      sp_sf <- st_as_sf(sp_data)
+
+      # Create spatial folds using CAST
+      # CreateSpacetimeFolds separates training/test sets spatially
+      spatial_folds <- tryCatch({
+        CreateSpacetimeFolds(
+          x = sp_sf,
+          spacevar = "geometry",
+          k = min(CV_FOLDS, floor(length(sp_data) / 3))  # Adjust folds for small datasets
+        )
+      }, error = function(e) {
+        log_message(sprintf("    Spatial fold creation failed: %s", e$message), "WARNING")
+        NULL
+      })
+
+      if (!is.null(spatial_folds)) {
+        # Manual spatial CV with CAST folds
+        predictions <- rep(NA, length(sp_data))
+        observations <- sp_data[[all.vars(formula)[1]]]
+
+        for (fold in 1:length(spatial_folds$index)) {
+          train_idx <- spatial_folds$index[[fold]]
+          test_idx <- spatial_folds$indexOut[[fold]]
+
+          if (length(train_idx) >= 5 && length(test_idx) > 0) {
+            # Train on fold
+            train_data <- sp_data[train_idx, ]
+
+            # Predict test set
+            test_data <- sp_data[test_idx, ]
+
+            pred_result <- tryCatch({
+              krige(
+                formula = formula,
+                locations = train_data,
+                newdata = test_data,
+                model = vgm_model
+              )
+            }, error = function(e) {
+              NULL
+            })
+
+            if (!is.null(pred_result)) {
+              predictions[test_idx] <- pred_result$var1.pred
+            }
+          }
+        }
+
+        # Calculate metrics
+        valid_idx <- !is.na(predictions) & !is.na(observations)
+        if (sum(valid_idx) > 0) {
+          residuals <- observations[valid_idx] - predictions[valid_idx]
+
+          rmse <- sqrt(mean(residuals^2))
+          mae <- mean(abs(residuals))
+          me <- mean(residuals)
+
+          ss_res <- sum(residuals^2)
+          ss_tot <- sum((observations[valid_idx] - mean(observations[valid_idx]))^2)
+          r2 <- 1 - (ss_res / ss_tot)
+
+          return(list(
+            rmse = rmse,
+            mae = mae,
+            me = me,
+            r2 = r2,
+            method = "spatial_cv",
+            n_folds = length(spatial_folds$index),
+            n_validated = sum(valid_idx)
+          ))
+        }
+      }
+    }
+
+    # Fallback: standard k-fold CV
+    log_message("    Using standard k-fold cross-validation...")
+
     cv_result <- krige.cv(
       formula = formula,
       locations = sp_data,
@@ -200,27 +412,80 @@ crossvalidate_kriging <- function(sp_data, formula, vgm_model) {
       nfold = CV_FOLDS,
       verbose = FALSE
     )
-    
+
     # Calculate metrics
     rmse <- sqrt(mean(cv_result$residual^2, na.rm = TRUE))
     mae <- mean(abs(cv_result$residual), na.rm = TRUE)
     me <- mean(cv_result$residual, na.rm = TRUE)
-    
+
     # R² calculation
     ss_res <- sum(cv_result$residual^2, na.rm = TRUE)
     ss_tot <- sum((cv_result$observed - mean(cv_result$observed, na.rm = TRUE))^2, na.rm = TRUE)
     r2 <- 1 - (ss_res / ss_tot)
-    
+
     return(list(
       rmse = rmse,
       mae = mae,
       me = me,
       r2 = r2,
+      method = "kfold_cv",
       cv_data = cv_result
     ))
-    
+
   }, error = function(e) {
     log_message(sprintf("Cross-validation error: %s", e$message), "ERROR")
+    return(NULL)
+  })
+}
+
+#' Calculate Area of Applicability based on distance to samples
+#' @param pred_raster Prediction raster
+#' @param sample_points Sample locations (sf or sp)
+#' @param max_distance Maximum acceptable distance (meters)
+#' @return AOA raster (1 = inside AOA, NA = outside AOA)
+calculate_spatial_aoa <- function(pred_raster, sample_points, max_distance = NULL) {
+
+  tryCatch({
+    # Convert sample points to sf if needed
+    if (inherits(sample_points, "Spatial")) {
+      sample_points <- st_as_sf(sample_points)
+    }
+
+    # Get prediction grid centroids
+    pred_points <- as.points(pred_raster, na.rm = FALSE)
+    pred_sf <- st_as_sf(pred_points)
+
+    # Calculate distance to nearest sample for each prediction point
+    dist_matrix <- st_distance(pred_sf, sample_points)
+    min_dist <- apply(dist_matrix, 1, min)
+
+    # Determine threshold
+    if (is.null(max_distance)) {
+      # Use median nearest-neighbor distance * 3 as threshold
+      nn_dists <- apply(st_distance(sample_points, sample_points) + diag(Inf, nrow(sample_points)),
+                        1, min)
+      max_distance <- median(nn_dists, na.rm = TRUE) * 3
+    }
+
+    # Create AOA mask: 1 = inside AOA, NA = outside
+    aoa_values <- ifelse(min_dist <= max_distance, 1, NA)
+
+    # Convert to raster
+    aoa_raster <- pred_raster
+    values(aoa_raster) <- aoa_values
+
+    # Calculate % area in AOA
+    pct_in_aoa <- sum(!is.na(aoa_values)) / length(aoa_values) * 100
+
+    return(list(
+      aoa_raster = aoa_raster,
+      max_distance = max_distance,
+      pct_in_aoa = pct_in_aoa,
+      min_distances = min_dist
+    ))
+
+  }, error = function(e) {
+    log_message(sprintf("AOA calculation error: %s", e$message), "ERROR")
     return(NULL)
   })
 }
@@ -269,7 +534,7 @@ log_message(sprintf("Processing %d strata: %s",
 # Process each depth
 for (depth in STANDARD_DEPTHS) {
   
-  log_message(sprintf("\n=== Processing depth: %d cm ===", depth))
+  log_message(sprintf("\n=== Processing depth: %.1f cm ===", depth))
   
   # Filter to this depth
   cores_depth <- cores_standard %>%
@@ -306,7 +571,44 @@ for (depth in STANDARD_DEPTHS) {
     
     # Convert to sp object (required by gstat)
     cores_sp <- as(cores_sf, "Spatial")
-    
+
+    # ========================================================================
+    # EXTRACT MODULE 03 UNCERTAINTIES
+    # ========================================================================
+
+    # Check if uncertainty fields are available from Module 03
+    has_uncertainties <- all(c("soc_se_combined", "is_interpolated") %in% names(cores_stratum))
+
+    harmonization_var_mean <- 0  # Default if no uncertainty data
+
+    if (has_uncertainties) {
+      # Extract harmonization uncertainties
+      harmonization_se <- cores_stratum$soc_se_combined
+      harmonization_var <- harmonization_se^2
+
+      # Calculate mean variance for this stratum/depth
+      harmonization_var_mean <- mean(harmonization_var, na.rm = TRUE)
+
+      # Check interpolation status
+      n_interpolated <- sum(cores_stratum$is_interpolated, na.rm = TRUE)
+      n_measured <- sum(!cores_stratum$is_interpolated, na.rm = TRUE)
+
+      log_message(sprintf("  Module 03 uncertainties: mean SE = %.2f g/kg",
+                         sqrt(harmonization_var_mean)))
+      log_message(sprintf("  Depths: %d measured, %d interpolated",
+                         n_measured, n_interpolated))
+
+      # Optional: Include measurement CV if available
+      if ("measurement_cv" %in% names(cores_stratum)) {
+        mean_cv <- mean(cores_stratum$measurement_cv, na.rm = TRUE)
+        if (!is.na(mean_cv) && mean_cv > 0) {
+          log_message(sprintf("  Mean measurement CV: %.1f%%", mean_cv))
+        }
+      }
+    } else {
+      log_message("  No Module 03 uncertainty data - using kriging variance only", "WARNING")
+    }
+
     # ========================================================================
     # FIT VARIOGRAM
     # ========================================================================
@@ -321,7 +623,7 @@ for (depth in STANDARD_DEPTHS) {
     # Fit variogram
     vgm_result <- fit_variogram_auto(
       sp_data = cores_sp,
-      formula = soc_spline ~ 1,
+      formula = soc_harmonized ~ 1,
       cutoff = cutoff
     )
     
@@ -346,18 +648,21 @@ for (depth in STANDARD_DEPTHS) {
     # ========================================================================
     
     log_message("  Performing cross-validation...")
-    
+
     cv_result <- crossvalidate_kriging(
       sp_data = cores_sp,
-      formula = soc_spline ~ 1,
+      formula = soc_harmonized ~ 1,
       vgm_model = vgm_result$model
     )
     
     if (!is.null(cv_result)) {
-      log_message(sprintf("  CV RMSE: %.2f, R²: %.3f", 
-                         cv_result$rmse, cv_result$r2))
-      
-      # Store CV results
+      cv_method_label <- ifelse(!is.null(cv_result$method),
+                                ifelse(cv_result$method == "spatial_cv", "Spatial CV", "K-fold CV"),
+                                "K-fold CV")
+      log_message(sprintf("  CV (%s) RMSE: %.2f, R²: %.3f",
+                         cv_method_label, cv_result$rmse, cv_result$r2))
+
+      # Store CV results for ordinary kriging
       cv_results_all <- rbind(cv_results_all, data.frame(
         stratum = stratum_name,
         depth_cm = depth,
@@ -366,24 +671,107 @@ for (depth in STANDARD_DEPTHS) {
         cv_mae = cv_result$mae,
         cv_me = cv_result$me,
         cv_r2 = cv_result$r2,
+        cv_method = ifelse(!is.null(cv_result$method), cv_result$method, "kfold_cv"),
+        kriging_type = "ordinary",
         model_type = vgm_result$model$model[2],
         sserr = vgm_result$sserr
       ))
+
+      # ======================================================================
+      # OPTIONAL: COMPARE WITH SIMPLE KRIGING
+      # ======================================================================
+
+      if (COMPARE_KRIGING_METHODS) {
+        log_message("  Comparing with Simple Kriging...")
+
+        # For simple kriging, we need to specify a known mean (beta parameter)
+        # Use the sample mean for this stratum/depth
+        global_mean <- mean(cores_sp$soc_harmonized, na.rm = TRUE)
+
+        # Simple kriging CV using beta parameter
+        cv_result_sk <- tryCatch({
+          # Note: gstat's krige.cv doesn't directly support beta parameter
+          # We implement it by de-meaning the data, doing OK, then adding mean back
+          cores_sp_demeaned <- cores_sp
+          cores_sp_demeaned$soc_demeaned <- cores_sp$soc_harmonized - global_mean
+
+          # Perform CV on demeaned data
+          cv_sk <- krige.cv(
+            formula = soc_demeaned ~ 1,
+            locations = cores_sp_demeaned,
+            model = vgm_result$model,
+            nfold = CV_FOLDS,
+            verbose = FALSE
+          )
+
+          # Add mean back to predictions
+          cv_sk$var1.pred <- cv_sk$var1.pred + global_mean
+          cv_sk$observed <- cv_sk$observed + global_mean
+          cv_sk$residual <- cv_sk$observed - cv_sk$var1.pred
+
+          # Calculate metrics
+          rmse_sk <- sqrt(mean(cv_sk$residual^2, na.rm = TRUE))
+          mae_sk <- mean(abs(cv_sk$residual), na.rm = TRUE)
+          me_sk <- mean(cv_sk$residual, na.rm = TRUE)
+          ss_res_sk <- sum(cv_sk$residual^2, na.rm = TRUE)
+          ss_tot_sk <- sum((cv_sk$observed - mean(cv_sk$observed, na.rm = TRUE))^2, na.rm = TRUE)
+          r2_sk <- 1 - (ss_res_sk / ss_tot_sk)
+
+          list(rmse = rmse_sk, mae = mae_sk, me = me_sk, r2 = r2_sk)
+        }, error = function(e) {
+          log_message(sprintf("    Simple kriging CV failed: %s", e$message), "WARNING")
+          NULL
+        })
+
+        if (!is.null(cv_result_sk)) {
+          log_message(sprintf("  Simple Kriging CV RMSE: %.2f, R²: %.3f",
+                             cv_result_sk$rmse, cv_result_sk$r2))
+
+          # Compare methods
+          rmse_diff <- cv_result$rmse - cv_result_sk$rmse
+          better_method <- ifelse(cv_result_sk$rmse < cv_result$rmse, "Simple", "Ordinary")
+
+          log_message(sprintf("  Method comparison: %s kriging performs better (ΔRMSE: %.2f)",
+                             better_method, abs(rmse_diff)))
+
+          # Store SK results
+          cv_results_all <- rbind(cv_results_all, data.frame(
+            stratum = stratum_name,
+            depth_cm = depth,
+            n_samples = n_samples,
+            cv_rmse = cv_result_sk$rmse,
+            cv_mae = cv_result_sk$mae,
+            cv_me = cv_result_sk$me,
+            cv_r2 = cv_result_sk$r2,
+            cv_method = ifelse(!is.null(cv_result$method), cv_result$method, "kfold_cv"),
+            kriging_type = "simple",
+            model_type = vgm_result$model$model[2],
+            sserr = vgm_result$sserr
+          ))
+        }
+      }
     }
-    
+
     # ========================================================================
     # CREATE PREDICTION GRID
     # ========================================================================
-    
+
     log_message("  Creating prediction grid...")
-    
-    # Create grid covering stratum extent with buffer
-    buffer_dist <- 500  # 500m buffer
-    bbox_buffered <- st_buffer(st_as_sfc(bbox), buffer_dist)
-    
-    # Create raster template
-    extent_vec <- st_bbox(bbox_buffered)
-    
+
+    # Determine prediction extent
+    # Use GEE mask extent if available, otherwise use buffered sample extent
+    if (stratum_name %in% names(stratum_masks)) {
+      # Use mask extent for more accurate prediction area
+      extent_vec <- st_bbox(stratum_masks[[stratum_name]])
+      log_message("  Using GEE mask extent for prediction grid")
+    } else {
+      # Fallback: buffer around sample locations
+      buffer_dist <- 500  # 500m buffer
+      bbox_buffered <- st_buffer(st_as_sfc(bbox), buffer_dist)
+      extent_vec <- st_bbox(bbox_buffered)
+      log_message("  Using buffered sample extent for prediction grid")
+    }
+
     # Calculate grid dimensions
     x_range <- extent_vec["xmax"] - extent_vec["xmin"]
     y_range <- extent_vec["ymax"] - extent_vec["ymin"]
@@ -411,10 +799,10 @@ for (depth in STANDARD_DEPTHS) {
     # ========================================================================
     
     log_message("  Performing kriging...")
-    
+
     krige_result <- tryCatch({
       krige(
-        formula = soc_spline ~ 1,
+        formula = soc_harmonized ~ 1,
         locations = cores_sp,
         newdata = pred_grid_sp,
         model = vgm_result$model
@@ -452,7 +840,7 @@ for (depth in STANDARD_DEPTHS) {
       field = "var1.pred",
       fun = "mean"
     )
-    
+
     # Rasterize variance
     var_raster <- rasterize(
       x = krige_vect,
@@ -460,26 +848,111 @@ for (depth in STANDARD_DEPTHS) {
       field = "var1.var",
       fun = "mean"
     )
-    
+
+    # Apply stratum mask if available
+    if (stratum_name %in% names(stratum_masks)) {
+      log_message("  Applying GEE stratum boundary mask...")
+
+      # Resample mask to match prediction raster resolution
+      mask_resampled <- resample(stratum_masks[[stratum_name]],
+                                  pred_raster,
+                                  method = "near")
+
+      # Apply mask (keep only cells within stratum boundary)
+      pred_raster <- mask(pred_raster, mask_resampled)
+      var_raster <- mask(var_raster, mask_resampled)
+
+      log_message(sprintf("  Masked to stratum boundary (%d valid cells)",
+                         sum(!is.na(values(pred_raster)))))
+    }
+
+    # ========================================================================
+    # COMBINE UNCERTAINTIES
+    # ========================================================================
+
+    # Combine kriging variance with harmonization variance
+    # Total variance = kriging variance + harmonization variance
+    var_combined <- var_raster + harmonization_var_mean
+
+    if (has_uncertainties) {
+      log_message(sprintf("  Combined uncertainty: kriging var = %.2f, harmonization var = %.2f",
+                         mean(values(var_raster), na.rm = TRUE),
+                         harmonization_var_mean))
+    }
+
+    # Calculate standard errors
+    se_kriging <- sqrt(var_raster)
+    se_combined <- sqrt(var_combined)
+
     # Save prediction raster
     pred_file <- file.path("outputs/predictions/kriging",
-                          sprintf("soc_%s_%dcm.tif", 
+                          sprintf("soc_%s_%dcm.tif",
                                   gsub(" ", "_", stratum_name), depth))
     writeRaster(pred_raster, pred_file, overwrite = TRUE)
-    
-    # Save variance raster
-    var_file <- file.path("outputs/predictions/uncertainty",
-                         sprintf("variance_%s_%dcm.tif",
-                                 gsub(" ", "_", stratum_name), depth))
-    writeRaster(var_raster, var_file, overwrite = TRUE)
-    
-    # Calculate standard error (for 95% CI)
-    se_raster <- sqrt(var_raster)
-    se_file <- file.path("outputs/predictions/uncertainty",
-                        sprintf("se_%s_%dcm.tif",
-                                gsub(" ", "_", stratum_name), depth))
-    writeRaster(se_raster, se_file, overwrite = TRUE)
-    
+
+    # Save kriging variance raster (kriging uncertainty only)
+    var_kriging_file <- file.path("outputs/predictions/uncertainty",
+                                   sprintf("variance_kriging_%s_%dcm.tif",
+                                           gsub(" ", "_", stratum_name), depth))
+    writeRaster(var_raster, var_kriging_file, overwrite = TRUE)
+
+    # Save combined variance raster (kriging + harmonization)
+    var_combined_file <- file.path("outputs/predictions/uncertainty",
+                                    sprintf("variance_combined_%s_%dcm.tif",
+                                            gsub(" ", "_", stratum_name), depth))
+    writeRaster(var_combined, var_combined_file, overwrite = TRUE)
+
+    # Save kriging standard error
+    se_kriging_file <- file.path("outputs/predictions/uncertainty",
+                                  sprintf("se_kriging_%s_%dcm.tif",
+                                          gsub(" ", "_", stratum_name), depth))
+    writeRaster(se_kriging, se_kriging_file, overwrite = TRUE)
+
+    # Save combined standard error (RECOMMENDED FOR VM0033)
+    se_combined_file <- file.path("outputs/predictions/uncertainty",
+                                   sprintf("se_combined_%s_%dcm.tif",
+                                           gsub(" ", "_", stratum_name), depth))
+    writeRaster(se_combined, se_combined_file, overwrite = TRUE)
+
+    # ========================================================================
+    # CALCULATE AREA OF APPLICABILITY (AOA)
+    # ========================================================================
+
+    aoa_file <- NULL
+    aoa_max_dist <- NA
+    aoa_pct <- NA
+
+    if (ENABLE_AOA && has_cast) {
+      log_message("  Calculating Area of Applicability...")
+
+      # Use variogram range as max distance if available
+      vgm_range <- vgm_result$model$range[2]
+      max_aoa_dist <- ifelse(!is.na(vgm_range) && vgm_range > 0,
+                             vgm_range * 1.5,  # 1.5x variogram range
+                             NULL)  # NULL = auto-calculate
+
+      aoa_result <- calculate_spatial_aoa(
+        pred_raster = pred_raster,
+        sample_points = cores_sp,
+        max_distance = max_aoa_dist
+      )
+
+      if (!is.null(aoa_result)) {
+        # Save AOA raster
+        aoa_file <- file.path("outputs/predictions/aoa",
+                              sprintf("aoa_%s_%dcm.tif",
+                                     gsub(" ", "_", stratum_name), depth))
+        dir.create("outputs/predictions/aoa", recursive = TRUE, showWarnings = FALSE)
+        writeRaster(aoa_result$aoa_raster, aoa_file, overwrite = TRUE)
+
+        aoa_max_dist <- aoa_result$max_distance
+        aoa_pct <- aoa_result$pct_in_aoa
+
+        log_message(sprintf("  AOA: %.1f%% of area (max dist: %.0f m)",
+                           aoa_pct, aoa_max_dist))
+      }
+    }
+
     # Store result
     result_key <- sprintf("%s_%dcm", gsub(" ", "_", stratum_name), depth)
     kriging_results[[result_key]] <- list(
@@ -487,10 +960,18 @@ for (depth in STANDARD_DEPTHS) {
       depth_cm = depth,
       n_samples = n_samples,
       prediction_file = pred_file,
-      variance_file = var_file,
-      se_file = se_file,
+      variance_kriging_file = var_kriging_file,
+      variance_combined_file = var_combined_file,
+      se_kriging_file = se_kriging_file,
+      se_combined_file = se_combined_file,
+      aoa_file = aoa_file,
       mean_prediction = mean(values(pred_raster), na.rm = TRUE),
-      sd_prediction = sd(values(pred_raster), na.rm = TRUE)
+      sd_prediction = sd(values(pred_raster), na.rm = TRUE),
+      mean_se_combined = mean(values(se_combined), na.rm = TRUE),
+      has_harmonization_uncertainty = has_uncertainties,
+      harmonization_var_mean = harmonization_var_mean,
+      aoa_max_distance = aoa_max_dist,
+      aoa_pct_in = aoa_pct
     )
     
     log_message(sprintf("  Mean prediction: %.2f ± %.2f g/kg", 
@@ -498,6 +979,164 @@ for (depth in STANDARD_DEPTHS) {
                        kriging_results[[result_key]]$sd_prediction))
   }
 }
+
+# ============================================================================
+# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# ============================================================================
+
+log_message("\n=== VM0033 Layer Aggregation ===")
+
+# Create output directory for stocks
+dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
+
+# Load bulk density data (check multiple possible sources)
+bd_data <- NULL
+
+# Try to load bulk density from Module 01
+if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
+  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
+  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
+    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
+    bd_data <- cores_all %>%
+      filter(!is.na(!!sym(bd_field))) %>%
+      group_by(stratum) %>%
+      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
+    log_message(sprintf("Loaded bulk density data from cores (n=%d strata)", nrow(bd_data)))
+  }
+}
+
+# Default BD values if no data available (typical blue carbon values)
+# From literature: mangroves ~0.4-0.6, salt marshes ~0.3-0.8 g/cm³
+default_bd <- 0.5  # g/cm³ - conservative mid-range estimate
+
+# Process each stratum
+for (stratum_name in unique(cores_standard$stratum)) {
+
+  log_message(sprintf("\nAggregating stocks for: %s", stratum_name))
+
+  # Get BD for this stratum
+  if (!is.null(bd_data) && stratum_name %in% bd_data$stratum) {
+    bd_value <- bd_data$mean_bd[bd_data$stratum == stratum_name]
+    log_message(sprintf("  Using measured BD: %.3f g/cm³", bd_value))
+  } else {
+    bd_value <- default_bd
+    log_message(sprintf("  Using default BD: %.3f g/cm³ (no data available)", bd_value))
+  }
+
+  # Initialize stack rasters for this stratum
+  stock_layers <- list()
+
+  # Process each VM0033 layer
+  for (i in 1:nrow(VM0033_DEPTH_INTERVALS)) {
+
+    depth_top <- VM0033_DEPTH_INTERVALS$depth_top[i]
+    depth_bottom <- VM0033_DEPTH_INTERVALS$depth_bottom[i]
+    depth_midpoint <- VM0033_DEPTH_INTERVALS$depth_midpoint[i]
+    thickness_cm <- VM0033_DEPTH_INTERVALS$thickness_cm[i]
+
+    log_message(sprintf("  Layer %d: %d-%d cm (midpoint %.1f cm, thickness %d cm)",
+                       i, depth_top, depth_bottom, depth_midpoint, thickness_cm))
+
+    # Load SOC prediction raster for this depth midpoint
+    soc_file <- file.path("outputs/predictions/kriging",
+                          sprintf("soc_%s_%.1fcm.tif",
+                                 gsub(" ", "_", stratum_name),
+                                 depth_midpoint))
+
+    if (!file.exists(soc_file)) {
+      log_message(sprintf("    SOC file not found: %s - skipping", basename(soc_file)), "WARNING")
+      next
+    }
+
+    soc_raster <- rast(soc_file)
+
+    # Convert SOC concentration (g/kg) to SOC stock (Mg C/ha)
+    # Formula: Stock (Mg/ha) = SOC (g/kg) × BD (g/cm³) × thickness (cm) × 10
+    # The factor 10 converts from g/cm² to Mg/ha
+    stock_raster <- soc_raster * bd_value * thickness_cm * 10
+
+    # Save layer stock
+    stock_file <- file.path("outputs/predictions/stocks",
+                           sprintf("stock_layer%d_%s_%d-%dcm.tif",
+                                  i, gsub(" ", "_", stratum_name),
+                                  depth_top, depth_bottom))
+    writeRaster(stock_raster, stock_file, overwrite = TRUE)
+
+    stock_layers[[paste0("layer_", i)]] <- stock_raster
+
+    mean_stock <- mean(values(stock_raster), na.rm = TRUE)
+    log_message(sprintf("    Mean stock: %.2f Mg C/ha", mean_stock))
+
+    # Propagate uncertainty to stock
+    se_file <- file.path("outputs/predictions/uncertainty",
+                        sprintf("se_combined_%s_%.1fcm.tif",
+                               gsub(" ", "_", stratum_name),
+                               depth_midpoint))
+
+    if (file.exists(se_file)) {
+      se_raster <- rast(se_file)
+
+      # Stock SE = SOC_SE × BD × thickness × 10
+      stock_se_raster <- se_raster * bd_value * thickness_cm * 10
+
+      # Save stock SE
+      stock_se_file <- file.path("outputs/predictions/stocks",
+                                sprintf("stock_se_layer%d_%s_%d-%dcm.tif",
+                                       i, gsub(" ", "_", stratum_name),
+                                       depth_top, depth_bottom))
+      writeRaster(stock_se_raster, stock_se_file, overwrite = TRUE)
+
+      mean_stock_se <- mean(values(stock_se_raster), na.rm = TRUE)
+      log_message(sprintf("    Mean stock SE: %.2f Mg C/ha", mean_stock_se))
+    }
+  }
+
+  # Calculate cumulative stocks if we have all layers
+  if (length(stock_layers) > 0) {
+
+    # Total stock to 1m depth (sum of all layers)
+    if (length(stock_layers) == 4) {
+      total_stock <- Reduce(`+`, stock_layers)
+
+      total_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_total_0-100cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(total_stock, total_file, overwrite = TRUE)
+
+      mean_total <- mean(values(total_stock), na.rm = TRUE)
+      log_message(sprintf("  Total stock (0-100 cm): %.2f Mg C/ha", mean_total))
+    }
+
+    # Cumulative stocks for common reporting depths
+    # 0-30 cm (top 2 layers)
+    if (length(stock_layers) >= 2) {
+      stock_0_30 <- stock_layers[[1]] + stock_layers[[2]]
+
+      stock_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_cumulative_0-30cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(stock_0_30, stock_file, overwrite = TRUE)
+
+      mean_030 <- mean(values(stock_0_30), na.rm = TRUE)
+      log_message(sprintf("  Cumulative stock (0-30 cm): %.2f Mg C/ha", mean_030))
+    }
+
+    # 0-50 cm (top 3 layers)
+    if (length(stock_layers) >= 3) {
+      stock_0_50 <- stock_layers[[1]] + stock_layers[[2]] + stock_layers[[3]]
+
+      stock_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_cumulative_0-50cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(stock_0_50, stock_file, overwrite = TRUE)
+
+      mean_050 <- mean(values(stock_0_50), na.rm = TRUE)
+      log_message(sprintf("  Cumulative stock (0-50 cm): %.2f Mg C/ha", mean_050))
+    }
+  }
+}
+
+log_message("\nVM0033 layer aggregation complete")
 
 # ============================================================================
 # SAVE VARIOGRAM MODELS AND CV RESULTS
@@ -525,8 +1164,11 @@ log_message("Saved models and diagnostics")
 if (nrow(cv_results_all) > 0) {
   
   log_message("Creating CV summary plots...")
-  
-  suppressPackageStartupMessages(library(ggplot2))
+
+  suppressPackageStartupMessages({
+    library(ggplot2)
+    library(tidyr)
+  })
   
   # CV RMSE by stratum and depth
   p_cv_rmse <- ggplot(cv_results_all, aes(x = factor(depth_cm), y = cv_rmse, 
@@ -565,8 +1207,74 @@ if (nrow(cv_results_all) > 0) {
   
   ggsave("diagnostics/crossvalidation/cv_r2_by_stratum_depth.png",
          p_cv_r2, width = 10, height = 6, dpi = 300)
-  
-  log_message("Saved CV plots")
+
+  # ==========================================================================
+  # MODEL COMPARISON TABLE
+  # ==========================================================================
+
+  log_message("Creating model comparison table...")
+
+  # Summary table by stratum and depth
+  comparison_table <- cv_results_all %>%
+    group_by(stratum, depth_cm, kriging_type) %>%
+    summarise(
+      n = mean(n_samples),
+      RMSE = mean(cv_rmse, na.rm = TRUE),
+      MAE = mean(cv_mae, na.rm = TRUE),
+      R2 = mean(cv_r2, na.rm = TRUE),
+      Model = first(model_type),
+      .groups = "drop"
+    ) %>%
+    arrange(stratum, depth_cm, kriging_type)
+
+  # Save as CSV
+  write.csv(comparison_table,
+           "diagnostics/crossvalidation/model_comparison_table.csv",
+           row.names = FALSE)
+
+  # Print to console
+  cat("\n=== MODEL COMPARISON TABLE ===\n")
+  print(comparison_table, n = 100)
+
+  # If comparing OK vs SK, create comparison plot
+  if (COMPARE_KRIGING_METHODS && "simple" %in% cv_results_all$kriging_type) {
+
+    # Comparison plot: OK vs SK performance
+    comparison_wide <- cv_results_all %>%
+      select(stratum, depth_cm, kriging_type, cv_rmse, cv_r2) %>%
+      pivot_wider(names_from = kriging_type,
+                  values_from = c(cv_rmse, cv_r2),
+                  names_sep = "_")
+
+    if (all(c("cv_rmse_ordinary", "cv_rmse_simple") %in% names(comparison_wide))) {
+
+      # RMSE comparison
+      p_method_comp <- ggplot(comparison_wide,
+                              aes(x = cv_rmse_ordinary, y = cv_rmse_simple)) +
+        geom_point(aes(color = stratum), size = 3) +
+        geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+        geom_text(aes(label = paste0(depth_cm, "cm")),
+                  hjust = -0.2, size = 3) +
+        scale_color_manual(values = STRATUM_COLORS) +
+        labs(
+          title = "Kriging Method Comparison",
+          subtitle = "Ordinary vs Simple Kriging CV RMSE",
+          x = "Ordinary Kriging RMSE (g/kg)",
+          y = "Simple Kriging RMSE (g/kg)",
+          color = "Stratum",
+          caption = "Points below line indicate Simple Kriging performs better"
+        ) +
+        theme_minimal() +
+        theme(legend.position = "right")
+
+      ggsave("diagnostics/crossvalidation/method_comparison_ok_vs_sk.png",
+             p_method_comp, width = 8, height = 6, dpi = 300)
+
+      log_message("Saved method comparison plot")
+    }
+  }
+
+  log_message("Saved CV plots and comparison tables")
 }
 
 # ============================================================================
@@ -605,9 +1313,11 @@ if (nrow(cv_results_all) > 0) {
 }
 
 cat("\nOutputs:\n")
-cat("  Predictions: outputs/predictions/kriging/\n")
-cat("  Uncertainty: outputs/predictions/uncertainty/\n")
-cat("  Models: outputs/models/kriging/\n")
+cat("  SOC Predictions (g/kg): outputs/predictions/kriging/\n")
+cat("  SOC Uncertainty: outputs/predictions/uncertainty/\n")
+cat("  SOC Stocks (Mg C/ha): outputs/predictions/stocks/\n")
+cat("  Area of Applicability: outputs/predictions/aoa/\n")
+cat("  Variogram Models: outputs/models/kriging/\n")
 cat("  Diagnostics: diagnostics/variograms/ and diagnostics/crossvalidation/\n")
 
 cat("\nNext steps:\n")

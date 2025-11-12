@@ -42,8 +42,23 @@ STRATUM_COLORS <- c(
 # DEPTH CONFIGURATION
 # ============================================================================
 
-# Standard depth intervals (cm) - VM0033 recommendations
-STANDARD_DEPTHS <- c(0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100)
+# VM0033 standard depth intervals (cm) - depth midpoints for harmonization
+# These correspond to VM0033 depth layers: 0-15, 15-30, 30-50, 50-100 cm
+VM0033_DEPTH_MIDPOINTS <- c(7.5, 22.5, 40, 75)
+
+# VM0033 depth intervals (cm) - for mass-weighted aggregation
+VM0033_DEPTH_INTERVALS <- data.frame(
+  depth_top = c(0, 15, 30, 50),
+  depth_bottom = c(15, 30, 50, 100),
+  depth_midpoint = c(7.5, 22.5, 40, 75),
+  thickness_cm = c(15, 15, 20, 50)
+)
+
+# Standard depths for harmonization (VM0033 midpoints are default)
+STANDARD_DEPTHS <- VM0033_DEPTH_MIDPOINTS
+
+# Fine-scale depth intervals (optional, for detailed analysis)
+FINE_SCALE_DEPTHS <- c(0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100)
 
 # Maximum core depth (cm)
 MAX_CORE_DEPTH <- 100
@@ -120,6 +135,22 @@ VM0033_CV_THRESHOLD <- 30  # percent
 
 # Assumed CV for sample size calculation (conservative estimate)
 VM0033_ASSUMED_CV <- 30  # percent
+
+# ============================================================================
+# DEPTH HARMONIZATION PARAMETERS
+# ============================================================================
+
+# Interpolation method: "equal_area_spline", "smoothing_spline", "linear", "all"
+INTERPOLATION_METHOD <- "equal_area_spline"  # VM0033 recommended default
+
+# Spline smoothing parameters by core type
+SPLINE_SPAR_HR <- 0.3           # Less smoothing for high-resolution cores
+SPLINE_SPAR_COMPOSITE <- 0.5    # More smoothing for composite cores
+SPLINE_SPAR_AUTO <- NULL        # NULL = automatic cross-validation
+
+# Monotonicity parameters
+ALLOW_DEPTH_INCREASES <- TRUE   # Allow slight SOC increases with depth (common in some ecosystems)
+MAX_INCREASE_THRESHOLD <- 20    # Maximum % increase allowed between adjacent depths
 
 # ============================================================================
 # UNCERTAINTY PARAMETERS
