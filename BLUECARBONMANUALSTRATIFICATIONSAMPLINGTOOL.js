@@ -606,6 +606,63 @@ var strataResultsPanel = ui.Panel({style: {margin: '8px'}});
 panel.add(finalizeStrataButton);
 panel.add(strataResultsPanel);
 
+// --- Step 2.5: Sample Size Calculator ---
+panel.add(STYLES.HR());
+panel.add(ui.Label('Step 2.5: Calculate Required Sample Size', STYLES.HEADER));
+panel.add(ui.Label(
+  'VM0033 requires statistically valid sampling with 95% confidence intervals. Use this calculator to determine your required sample size.',
+  STYLES.INSTRUCTION
+));
+
+// VM0033 Standards Reference Box
+var vm0033StandardsLabel = ui.Label(
+  '📘 VM0033 Standards:\n' +
+  '   • Confidence Level: 95% (fixed)\n' +
+  '   • Target Precision: 10-20% relative error\n' +
+  '   • Minimum per stratum: 3 cores\n' +
+  '   • Estimated CV: 30% (conservative)',
+  {
+    fontSize: '11px',
+    color: '#1565C0',
+    margin: '8px 8px',
+    padding: '8px',
+    border: '1px solid #BBDEFB',
+    backgroundColor: '#E3F2FD',
+    whiteSpace: 'pre'
+  }
+);
+panel.add(vm0033StandardsLabel);
+
+// Sample Size Input and Allocation Method
+panel.add(ui.Label('Enter Your Proposed Sample Size:', STYLES.SUBHEADER));
+
+var proposedSampleSizeBox = ui.Textbox({
+  value: '15',
+  placeholder: 'Total HR cores',
+  style: {stretch: 'horizontal', margin: '4px 8px'}
+});
+
+var calculatorAllocationSelect = ui.Select({
+  items: ['Proportional', 'Equal'],
+  value: 'Proportional',
+  style: {stretch: 'horizontal', margin: '4px 8px'}
+});
+
+panel.add(ui.Label('Total HR Cores:', {fontSize: '12px', margin: '4px 8px'}));
+panel.add(proposedSampleSizeBox);
+panel.add(ui.Label('Allocation Method:', {fontSize: '12px', margin: '4px 8px'}));
+panel.add(calculatorAllocationSelect);
+
+var calculateButton = ui.Button({
+  label: '🧮 Calculate Sample Size Requirements',
+  style: {stretch: 'horizontal', margin: '8px'},
+  disabled: true
+});
+panel.add(calculateButton);
+
+var sampleSizeResultsPanel = ui.Panel({style: {margin: '8px'}});
+panel.add(sampleSizeResultsPanel);
+
 // --- Step 3: Configure Sampling ---
 panel.add(STYLES.HR());
 panel.add(ui.Label('Step 3: Configure Sampling Design', STYLES.HEADER));
@@ -800,8 +857,188 @@ drawingTools.onDraw(ui.util.debounce(function(geometry) {
  */
 finalizeStrataButton.onClick(function() {
   BlueCarbon.finalizeAndAnalyzeStrata(strataResultsPanel);
-  generateSamplingButton.setDisabled(false);
+  calculateButton.setDisabled(false);
   exportStrataButton.setDisabled(false);
+});
+
+/**
+ * Calculate sample size requirements (NEW)
+ */
+calculateButton.onClick(function() {
+  if (!AppState.strataInfo) {
+    alert('Please finalize strata first (Step 2).');
+    return;
+  }
+
+  var proposedTotal = parseInt(proposedSampleSizeBox.getValue());
+  var allocationMethod = calculatorAllocationSelect.getValue();
+
+  if (!proposedTotal || proposedTotal < 1) {
+    alert('Please enter a valid sample size (must be at least 1).');
+    return;
+  }
+
+  sampleSizeResultsPanel.clear();
+
+  // Calculate allocation
+  var tempAllocation = [];
+  var totalArea = AppState.strataInfo.reduce(function(sum, s) { return sum + s.area; }, 0);
+
+  AppState.strataInfo.forEach(function(s) {
+    var allocated;
+    if (allocationMethod === 'Proportional') {
+      var proportion = totalArea > 0 ? s.area / totalArea : 0;
+      allocated = Math.max(CONFIG.MIN_CORES_PER_STRATUM, Math.round(proportion * proposedTotal));
+    } else {
+      allocated = Math.max(CONFIG.MIN_CORES_PER_STRATUM, Math.floor(proposedTotal / AppState.strataInfo.length));
+    }
+    tempAllocation.push({
+      stratum: s.stratum,
+      area: s.area,
+      points: allocated
+    });
+  });
+
+  // Display recommendations first
+  sampleSizeResultsPanel.add(ui.Label('📊 VM0033 Sample Size Recommendations:', STYLES.SUBHEADER));
+
+  var recommendationsTable = ui.Panel({
+    layout: ui.Panel.Layout.flow('vertical'),
+    style: {margin: '8px', padding: '8px', border: '1px solid #E0E0E0', backgroundColor: '#FAFAFA'}
+  });
+
+  // Calculate recommended totals for whole study
+  var cv = CONFIG.TARGET_CV;
+  var req20 = SampleSize.calculateRequiredN(cv, 20, 95);
+  var req15 = SampleSize.calculateRequiredN(cv, 15, 95);
+  var req10 = SampleSize.calculateRequiredN(cv, 10, 95);
+
+  var numStrata = AppState.strataInfo.length;
+  var totalFor20 = req20.requiredN * numStrata;
+  var totalFor15 = req15.requiredN * numStrata;
+  var totalFor10 = req10.requiredN * numStrata;
+
+  recommendationsTable.add(ui.Label('Recommended Total Cores (all strata):', {fontSize: '12px', fontWeight: 'bold', margin: '4px'}));
+  recommendationsTable.add(ui.Label('  • Acceptable (±20% error): ' + totalFor20 + ' cores', {fontSize: '11px', color: '#F57F17', margin: '2px 8px'}));
+  recommendationsTable.add(ui.Label('  • Good (±15% error): ' + totalFor15 + ' cores', {fontSize: '11px', color: '#388E3C', margin: '2px 8px'}));
+  recommendationsTable.add(ui.Label('  • Excellent (±10% error): ' + totalFor10 + ' cores', {fontSize: '11px', color: '#2E7D32', margin: '2px 8px'}));
+  recommendationsTable.add(ui.Label('', {margin: '4px'})); // Spacer
+  recommendationsTable.add(ui.Label('Your proposed: ' + proposedTotal + ' cores', {fontSize: '12px', fontWeight: 'bold', margin: '4px'}));
+
+  sampleSizeResultsPanel.add(recommendationsTable);
+
+  // Overall assessment
+  var overallStatus, overallColor, overallIcon;
+  if (proposedTotal >= totalFor10) {
+    overallStatus = 'EXCELLENT - Exceeds VM0033 requirements';
+    overallColor = '#2E7D32';
+    overallIcon = '✓✓✓';
+  } else if (proposedTotal >= totalFor15) {
+    overallStatus = 'GOOD - Meets VM0033 requirements';
+    overallColor = '#388E3C';
+    overallIcon = '✓✓';
+  } else if (proposedTotal >= totalFor20) {
+    overallStatus = 'ACCEPTABLE - Meets minimum VM0033';
+    overallColor = '#F57F17';
+    overallIcon = '✓';
+  } else {
+    overallStatus = 'LOW PRECISION - Below VM0033 standards';
+    overallColor = '#F57C00';
+    overallIcon = '⚠';
+  }
+
+  sampleSizeResultsPanel.add(ui.Label(
+    overallIcon + ' Overall Assessment: ' + overallStatus,
+    {fontSize: '13px', fontWeight: 'bold', color: overallColor, margin: '8px'}
+  ));
+
+  // Stratum-by-stratum breakdown
+  sampleSizeResultsPanel.add(ui.Label('', {margin: '4px'})); // Spacer
+  sampleSizeResultsPanel.add(ui.Label('📋 Allocation by Stratum:', STYLES.SUBHEADER));
+
+  var allStrataGood = true;
+
+  tempAllocation.forEach(function(s) {
+    var estimatedCV = CONFIG.TARGET_CV;
+    var req20pct = SampleSize.calculateRequiredN(estimatedCV, 20, 95);
+    var req15pct = SampleSize.calculateRequiredN(estimatedCV, 15, 95);
+    var req10pct = SampleSize.calculateRequiredN(estimatedCV, 10, 95);
+
+    var allocated = s.points;
+    var areaHa = (s.area / 10000).toFixed(1);
+
+    var status, color, icon, precision;
+    if (allocated >= req10pct.requiredN) {
+      status = 'Excellent';
+      color = '#2E7D32';
+      icon = '✓✓';
+      precision = '±10%';
+    } else if (allocated >= req15pct.requiredN) {
+      status = 'Good';
+      color = '#388E3C';
+      icon = '✓';
+      precision = '±15%';
+    } else if (allocated >= req20pct.requiredN) {
+      status = 'Acceptable';
+      color = '#F57F17';
+      icon = '⚠';
+      precision = '±20%';
+    } else if (allocated >= CONFIG.MIN_CORES_PER_STRATUM) {
+      status = 'Low precision';
+      color = '#F57C00';
+      icon = '⚠⚠';
+      precision = '>±20%';
+      allStrataGood = false;
+    } else {
+      status = 'Insufficient';
+      color = '#D32F2F';
+      icon = '✗';
+      precision = 'N/A';
+      allStrataGood = false;
+    }
+
+    var stratumLabel = ui.Label(
+      icon + ' ' + s.stratum + ': ' + allocated + ' cores (' + areaHa + ' ha)',
+      {fontSize: '12px', fontWeight: 'bold', color: color, margin: '4px 8px'}
+    );
+    sampleSizeResultsPanel.add(stratumLabel);
+
+    var detailsText = '    ' + status + ' | Precision: ' + precision +
+                      ' | Need ±20%: ' + req20pct.requiredN + ', ±10%: ' + req10pct.requiredN;
+    sampleSizeResultsPanel.add(ui.Label(detailsText, {fontSize: '10px', color: '#666', margin: '0 8px 6px 20px'}));
+  });
+
+  // Final recommendation
+  sampleSizeResultsPanel.add(ui.Label('', {margin: '4px'})); // Spacer
+
+  if (proposedTotal >= totalFor15 && allStrataGood) {
+    sampleSizeResultsPanel.add(ui.Label(
+      '✓ Recommendation: Your sample size is appropriate for VM0033 verification. Proceed to Step 3.',
+      {fontSize: '12px', fontWeight: 'bold', color: '#2E7D32', margin: '8px', padding: '8px', backgroundColor: '#E8F5E9', border: '1px solid #4CAF50'}
+    ));
+    generateSamplingButton.setDisabled(false);
+    hrCoresBox.setValue(proposedTotal.toString());
+  } else if (proposedTotal >= totalFor20) {
+    sampleSizeResultsPanel.add(ui.Label(
+      '⚠ Recommendation: Your sample size meets minimum VM0033 but consider increasing for better precision.',
+      {fontSize: '12px', fontWeight: 'bold', color: '#F57F17', margin: '8px', padding: '8px', backgroundColor: '#FFF8E1', border: '1px solid #FFC107'}
+    ));
+    generateSamplingButton.setDisabled(false);
+    hrCoresBox.setValue(proposedTotal.toString());
+  } else {
+    sampleSizeResultsPanel.add(ui.Label(
+      '⚠ Warning: Your sample size is below VM0033 standards. Consider increasing to at least ' + totalFor20 + ' cores.',
+      {fontSize: '12px', fontWeight: 'bold', color: '#F57C00', margin: '8px', padding: '8px', backgroundColor: '#FFF3E0', border: '1px solid #FF9800'}
+    ));
+    sampleSizeResultsPanel.add(ui.Label(
+      'You may proceed, but uncertainty will be high and may not meet verification requirements.',
+      {fontSize: '11px', color: '#666', margin: '4px 8px', fontStyle: 'italic'}
+    ));
+    generateSamplingButton.setDisabled(false);
+    hrCoresBox.setValue(proposedTotal.toString());
+  }
+
+  print('✓ Sample size calculation complete for ' + proposedTotal + ' cores');
 });
 
 /**
@@ -834,8 +1071,8 @@ generateSamplingButton.onClick(function() {
     return;
   }
 
-  // Allocate cores across strata (now with validation)
-  var allocatedStrata = BlueCarbon.allocatePoints(params.allocationMethod, params.totalHRCores, samplingResultsPanel);
+  // Allocate cores across strata
+  var allocatedStrata = BlueCarbon.allocatePoints(params.allocationMethod, params.totalHRCores, null);
 
   // Generate samples for each stratum
   var allHRCores = [];
@@ -1193,12 +1430,14 @@ print('');
 print('Workflow:');
 print('  Step 1: Select stratum → Draw polygon (repeat for all strata)');
 print('  Step 2: Finalize & analyze areas');
+print('  Step 2.5: Calculate required sample size (NEW!)');
 print('  Step 3: Configure sampling → Generate locations');
 print('  Step 4: Export results');
 print('');
 print('NEW in this version:');
 print('  ✓ TRUE systematic grid sampling (not random)');
-print('  ✓ VM0033 sample size validation (95% CI, 10-20% precision)');
+print('  ✓ Interactive sample size calculator with VM0033 validation');
+print('  ✓ Real-time CI and precision feedback (10-20% error)');
 print('  ✓ Improved pairing (nearest neighbor matching)');
 print('  ✓ VM0033 depth interval guidance');
 print('');
