@@ -534,7 +534,7 @@ log_message(sprintf("Processing %d strata: %s",
 # Process each depth
 for (depth in STANDARD_DEPTHS) {
   
-  log_message(sprintf("\n=== Processing depth: %d cm ===", depth))
+  log_message(sprintf("\n=== Processing depth: %.1f cm ===", depth))
   
   # Filter to this depth
   cores_depth <- cores_standard %>%
@@ -981,6 +981,164 @@ for (depth in STANDARD_DEPTHS) {
 }
 
 # ============================================================================
+# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# ============================================================================
+
+log_message("\n=== VM0033 Layer Aggregation ===")
+
+# Create output directory for stocks
+dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
+
+# Load bulk density data (check multiple possible sources)
+bd_data <- NULL
+
+# Try to load bulk density from Module 01
+if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
+  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
+  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
+    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
+    bd_data <- cores_all %>%
+      filter(!is.na(!!sym(bd_field))) %>%
+      group_by(stratum) %>%
+      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
+    log_message(sprintf("Loaded bulk density data from cores (n=%d strata)", nrow(bd_data)))
+  }
+}
+
+# Default BD values if no data available (typical blue carbon values)
+# From literature: mangroves ~0.4-0.6, salt marshes ~0.3-0.8 g/cm³
+default_bd <- 0.5  # g/cm³ - conservative mid-range estimate
+
+# Process each stratum
+for (stratum_name in unique(cores_standard$stratum)) {
+
+  log_message(sprintf("\nAggregating stocks for: %s", stratum_name))
+
+  # Get BD for this stratum
+  if (!is.null(bd_data) && stratum_name %in% bd_data$stratum) {
+    bd_value <- bd_data$mean_bd[bd_data$stratum == stratum_name]
+    log_message(sprintf("  Using measured BD: %.3f g/cm³", bd_value))
+  } else {
+    bd_value <- default_bd
+    log_message(sprintf("  Using default BD: %.3f g/cm³ (no data available)", bd_value))
+  }
+
+  # Initialize stack rasters for this stratum
+  stock_layers <- list()
+
+  # Process each VM0033 layer
+  for (i in 1:nrow(VM0033_DEPTH_INTERVALS)) {
+
+    depth_top <- VM0033_DEPTH_INTERVALS$depth_top[i]
+    depth_bottom <- VM0033_DEPTH_INTERVALS$depth_bottom[i]
+    depth_midpoint <- VM0033_DEPTH_INTERVALS$depth_midpoint[i]
+    thickness_cm <- VM0033_DEPTH_INTERVALS$thickness_cm[i]
+
+    log_message(sprintf("  Layer %d: %d-%d cm (midpoint %.1f cm, thickness %d cm)",
+                       i, depth_top, depth_bottom, depth_midpoint, thickness_cm))
+
+    # Load SOC prediction raster for this depth midpoint
+    soc_file <- file.path("outputs/predictions/kriging",
+                          sprintf("soc_%s_%.1fcm.tif",
+                                 gsub(" ", "_", stratum_name),
+                                 depth_midpoint))
+
+    if (!file.exists(soc_file)) {
+      log_message(sprintf("    SOC file not found: %s - skipping", basename(soc_file)), "WARNING")
+      next
+    }
+
+    soc_raster <- rast(soc_file)
+
+    # Convert SOC concentration (g/kg) to SOC stock (Mg C/ha)
+    # Formula: Stock (Mg/ha) = SOC (g/kg) × BD (g/cm³) × thickness (cm) × 10
+    # The factor 10 converts from g/cm² to Mg/ha
+    stock_raster <- soc_raster * bd_value * thickness_cm * 10
+
+    # Save layer stock
+    stock_file <- file.path("outputs/predictions/stocks",
+                           sprintf("stock_layer%d_%s_%d-%dcm.tif",
+                                  i, gsub(" ", "_", stratum_name),
+                                  depth_top, depth_bottom))
+    writeRaster(stock_raster, stock_file, overwrite = TRUE)
+
+    stock_layers[[paste0("layer_", i)]] <- stock_raster
+
+    mean_stock <- mean(values(stock_raster), na.rm = TRUE)
+    log_message(sprintf("    Mean stock: %.2f Mg C/ha", mean_stock))
+
+    # Propagate uncertainty to stock
+    se_file <- file.path("outputs/predictions/uncertainty",
+                        sprintf("se_combined_%s_%.1fcm.tif",
+                               gsub(" ", "_", stratum_name),
+                               depth_midpoint))
+
+    if (file.exists(se_file)) {
+      se_raster <- rast(se_file)
+
+      # Stock SE = SOC_SE × BD × thickness × 10
+      stock_se_raster <- se_raster * bd_value * thickness_cm * 10
+
+      # Save stock SE
+      stock_se_file <- file.path("outputs/predictions/stocks",
+                                sprintf("stock_se_layer%d_%s_%d-%dcm.tif",
+                                       i, gsub(" ", "_", stratum_name),
+                                       depth_top, depth_bottom))
+      writeRaster(stock_se_raster, stock_se_file, overwrite = TRUE)
+
+      mean_stock_se <- mean(values(stock_se_raster), na.rm = TRUE)
+      log_message(sprintf("    Mean stock SE: %.2f Mg C/ha", mean_stock_se))
+    }
+  }
+
+  # Calculate cumulative stocks if we have all layers
+  if (length(stock_layers) > 0) {
+
+    # Total stock to 1m depth (sum of all layers)
+    if (length(stock_layers) == 4) {
+      total_stock <- Reduce(`+`, stock_layers)
+
+      total_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_total_0-100cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(total_stock, total_file, overwrite = TRUE)
+
+      mean_total <- mean(values(total_stock), na.rm = TRUE)
+      log_message(sprintf("  Total stock (0-100 cm): %.2f Mg C/ha", mean_total))
+    }
+
+    # Cumulative stocks for common reporting depths
+    # 0-30 cm (top 2 layers)
+    if (length(stock_layers) >= 2) {
+      stock_0_30 <- stock_layers[[1]] + stock_layers[[2]]
+
+      stock_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_cumulative_0-30cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(stock_0_30, stock_file, overwrite = TRUE)
+
+      mean_030 <- mean(values(stock_0_30), na.rm = TRUE)
+      log_message(sprintf("  Cumulative stock (0-30 cm): %.2f Mg C/ha", mean_030))
+    }
+
+    # 0-50 cm (top 3 layers)
+    if (length(stock_layers) >= 3) {
+      stock_0_50 <- stock_layers[[1]] + stock_layers[[2]] + stock_layers[[3]]
+
+      stock_file <- file.path("outputs/predictions/stocks",
+                             sprintf("stock_cumulative_0-50cm_%s.tif",
+                                    gsub(" ", "_", stratum_name)))
+      writeRaster(stock_0_50, stock_file, overwrite = TRUE)
+
+      mean_050 <- mean(values(stock_0_50), na.rm = TRUE)
+      log_message(sprintf("  Cumulative stock (0-50 cm): %.2f Mg C/ha", mean_050))
+    }
+  }
+}
+
+log_message("\nVM0033 layer aggregation complete")
+
+# ============================================================================
 # SAVE VARIOGRAM MODELS AND CV RESULTS
 # ============================================================================
 
@@ -1155,9 +1313,11 @@ if (nrow(cv_results_all) > 0) {
 }
 
 cat("\nOutputs:\n")
-cat("  Predictions: outputs/predictions/kriging/\n")
-cat("  Uncertainty: outputs/predictions/uncertainty/\n")
-cat("  Models: outputs/models/kriging/\n")
+cat("  SOC Predictions (g/kg): outputs/predictions/kriging/\n")
+cat("  SOC Uncertainty: outputs/predictions/uncertainty/\n")
+cat("  SOC Stocks (Mg C/ha): outputs/predictions/stocks/\n")
+cat("  Area of Applicability: outputs/predictions/aoa/\n")
+cat("  Variogram Models: outputs/models/kriging/\n")
 cat("  Diagnostics: diagnostics/variograms/ and diagnostics/crossvalidation/\n")
 
 cat("\nNext steps:\n")
