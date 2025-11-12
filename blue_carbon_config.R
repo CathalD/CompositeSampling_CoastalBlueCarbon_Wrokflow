@@ -106,6 +106,22 @@ QC_LAT_MIN <- -90
 QC_LAT_MAX <- 90
 
 # ============================================================================
+# VM0033 SAMPLING REQUIREMENTS
+# ============================================================================
+
+# Minimum cores per stratum (VM0033 requirement)
+VM0033_MIN_CORES <- 3
+
+# Target precision (VM0033 acceptable range: 10-20% relative error at 95% CI)
+VM0033_TARGET_PRECISION <- 20  # percent
+
+# Target CV threshold (higher CV = higher uncertainty)
+VM0033_CV_THRESHOLD <- 30  # percent
+
+# Assumed CV for sample size calculation (conservative estimate)
+VM0033_ASSUMED_CV <- 30  # percent
+
+# ============================================================================
 # UNCERTAINTY PARAMETERS
 # ============================================================================
 

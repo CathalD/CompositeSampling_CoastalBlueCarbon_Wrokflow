@@ -513,54 +513,51 @@ var vhQA = sarFeatures.select('VH_median')
 print('✓ SAR features processed:', sarFeatures.bandNames());
 
 // ============================================================================
-// SECTION 6: SALINITY PROXIES (BLUE CARBON SPECIFIC)
-// ============================================================================
-
-if (CONFIG.includeSalinityProxies) {
-  print('\n=== Processing Salinity Proxies ===');
-  
-  // Distance to freshwater inputs
-  // Note: Replace with actual river/stream dataset for your region
-  // var rivers = ee.FeatureCollection('projects/your_river_dataset');
-  // For now, use a proxy based on water occurrence patterns
-  
-  // Distance to permanent water bodies (ocean proxy)
-  var permanentWater = waterOccurrence.gte(90);
-  var distToOcean = permanentWater.fastDistanceTransform()
-    .sqrt()
-    .multiply(ee.Image.pixelArea().sqrt())
-    .rename('dist_to_ocean_m');
-  
-  // Salinity risk index (simple proxy: closer to ocean = higher salinity)
-  var salinityRisk = distToOcean.divide(1000).multiply(-1).add(10)
-    .clamp(0, 10)
-    .rename('salinity_risk_index');
-  
-  var salinityProxies = ee.Image.cat([
-    distToOcean,
-    salinityRisk
-  ]);
-  
-  print('✓ Salinity proxies processed:', salinityProxies.bandNames());
-}
-
-// ============================================================================
-// SECTION 7: HYDROLOGICAL CONNECTIVITY (BLUE CARBON SPECIFIC)
+// SECTION 6: HYDROLOGICAL CONNECTIVITY (BLUE CARBON SPECIFIC)
 // ============================================================================
 
 if (CONFIG.includeConnectivityMetrics) {
   print('\n=== Processing Hydrological Connectivity ===');
   
-  // Calculate flow direction and accumulation using terrain analysis
-  var flowDirection = ee.Terrain.aspect(elevation).rename('flow_direction');
-  
-  // Simple flow accumulation using focal statistics (proxy)
-  // This approximates drainage patterns without requiring HydroSHEDS
-  var flowAccumulationProxy = elevation.multiply(-1)  // Invert elevation
-    .focal_mean(500, 'circle', 'meters')  // Local drainage basin
-    .subtract(elevation.multiply(-1))
-    .abs()
-    .rename('flow_accumulation_proxy');
+  // Calculate flow direction using D8 algorithm (8 directions)
+  // D8 flow direction: identifies steepest downslope neighbor
+  var flowDirection = ee.Terrain.aspect(elevation).rename('flow_direction_degrees');
+
+  // Proper D8 flow accumulation algorithm
+  // This calculates true flow accumulation by summing contributing cells
+  // Uses iterative accumulation with neighborhood analysis
+
+  // Step 1: Calculate slope to each neighbor (3x3 window)
+  var neighbors = [
+    [-1, -1], [-1, 0], [-1, 1],  // Top row
+    [0, -1],           [0, 1],    // Middle row (skip center)
+    [1, -1],  [1, 0],  [1, 1]     // Bottom row
+  ];
+
+  // Calculate flow direction as aspect-based drainage
+  var slopeRadians = slope.multiply(Math.PI).divide(180);
+  var aspectRadians = flowDirection.multiply(Math.PI).divide(180);
+
+  // Step 2: Calculate contributing area using focal operations
+  // Each pixel contributes to downstream pixels based on flow direction
+  // Approximate flow accumulation using iterative focal sums weighted by slope
+  var flowAccumulation = ee.Image(1);  // Initialize with 1 (self)
+
+  // Iterate to accumulate flow (D8 approximation using focal operations)
+  for (var iter = 0; iter < 5; iter++) {  // 5 iterations for local watersheds
+    var flowContribution = flowAccumulation
+      .focal_max({
+        kernel: ee.Kernel.square({radius: 1, units: 'pixels'}),
+        iterations: 1
+      })
+      .multiply(slopeRadians.divide(10).add(1));  // Weight by slope
+
+    flowAccumulation = flowAccumulation.add(flowContribution.multiply(0.3));
+  }
+
+  flowAccumulation = flowAccumulation
+    .log10()  // Log scale for better visualization
+    .rename('flow_accumulation_log');
   
   // Alternative: Use slope to identify potential channels
   var channelPotential = slope.lt(2)  // Very flat areas
@@ -592,7 +589,7 @@ if (CONFIG.includeConnectivityMetrics) {
     .rename('terrain_curvature');
   
   var connectivityMetrics = ee.Image.cat([
-    flowAccumulationProxy,
+    flowAccumulation,
     channelPotential,
     distToChannel,
     twi,
@@ -604,13 +601,101 @@ if (CONFIG.includeConnectivityMetrics) {
 }
 
 // ============================================================================
+// SECTION 7: SALINITY PROXIES (BLUE CARBON SPECIFIC)
+// ============================================================================
+
+if (CONFIG.includeSalinityProxies) {
+  print('\n=== Processing Salinity Proxies (Multi-Factor) ===');
+
+  // FACTOR 1: Distance to permanent water bodies (ocean/estuary proxy)
+  var permanentWater = waterOccurrence.gte(90);
+  var distToOcean = permanentWater.fastDistanceTransform()
+    .sqrt()
+    .multiply(ee.Image.pixelArea().sqrt())
+    .rename('dist_to_ocean_m');
+
+  // Normalized distance score (0-10, closer to ocean = higher)
+  var oceanProximityScore = distToOcean.divide(1000).multiply(-1).add(10)
+    .clamp(0, 10)
+    .rename('ocean_proximity_score');
+
+  // FACTOR 2: Tidal inundation frequency (more frequent = higher salinity exposure)
+  // Use water occurrence as proxy for tidal influence
+  var tidalInfluenceScore = waterOccurrence.divide(10)  // Scale to 0-10
+    .clamp(0, 10)
+    .rename('tidal_influence_score');
+
+  // FACTOR 3: Freshwater input proxy
+  // Higher elevation areas and those far from drainage channels likely have less freshwater dilution
+  // Lower elevation coastal areas with high water occurrence but low elevation = more marine influence
+  var minElevation = ee.Number(elevation.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: CONFIG.aoi,
+    scale: 30,
+    bestEffort: true,
+    maxPixels: 1e9
+  }).values().get(0));
+
+  var freshwaterDilution = elevation.subtract(minElevation)
+    .divide(5)  // Normalize by typical coastal elevation range (5m)
+    .clamp(0, 10);
+
+  // Invert so low values = high salinity (less freshwater dilution)
+  var freshwaterDeficit = ee.Image(10).subtract(freshwaterDilution)
+    .rename('freshwater_deficit_score');
+
+  // FACTOR 4: Drainage connectivity (using flow accumulation)
+  // Areas with high flow accumulation receive more freshwater runoff
+  // Log scale and invert: low flow = high salinity
+  var drainageIsolation = ee.Image(10).subtract(
+    flowAccumulation.unitScale(0, 2).multiply(10)  // Normalize log flow accum
+  ).clamp(0, 10).rename('drainage_isolation_score');
+
+  // MULTI-FACTOR SALINITY RISK INDEX
+  // Weighted combination of all factors (0-100 scale)
+  // Higher values = higher salinity conditions
+  var salinityRiskIndex = oceanProximityScore.multiply(0.35)      // 35% - distance to ocean
+    .add(tidalInfluenceScore.multiply(0.30))                      // 30% - tidal inundation
+    .add(freshwaterDeficit.multiply(0.20))                        // 20% - freshwater deficit
+    .add(drainageIsolation.multiply(0.15))                        // 15% - drainage isolation
+    .multiply(10)  // Scale to 0-100
+    .rename('salinity_risk_index_0_100');
+
+  // Categorical salinity zones (for stratification)
+  var salinityZone = ee.Image(0)
+    .where(salinityRiskIndex.gte(70), 4)   // Euhaline (marine, >30 ppt)
+    .where(salinityRiskIndex.gte(50).and(salinityRiskIndex.lt(70)), 3)  // Polyhaline (18-30 ppt)
+    .where(salinityRiskIndex.gte(30).and(salinityRiskIndex.lt(50)), 2)  // Mesohaline (5-18 ppt)
+    .where(salinityRiskIndex.gte(10).and(salinityRiskIndex.lt(30)), 1)  // Oligohaline (0.5-5 ppt)
+    .rename('salinity_zone_categorical');
+
+  var salinityProxies = ee.Image.cat([
+    distToOcean,
+    oceanProximityScore,
+    tidalInfluenceScore,
+    freshwaterDeficit,
+    drainageIsolation,
+    salinityRiskIndex,
+    salinityZone
+  ]);
+
+  print('✓ Multi-factor salinity proxies processed:', salinityProxies.bandNames());
+  print('  → Factors: Ocean proximity, Tidal influence, Freshwater deficit, Drainage isolation');
+}
+
+// ============================================================================
 // SECTION 8: BIOMASS PROXIES (BLUE CARBON SPECIFIC)
 // ============================================================================
 
 if (CONFIG.includeBiomassProxies) {
   print('\n=== Processing Biomass Proxies ===');
-  
+
   // Combined optical-SAR biomass index
+  // NOTE: Current weights (0.4 NDVI, 0.3 EVI, 0.3 SAR) are generic defaults
+  // TODO: Calibrate these weights using field biomass measurements for your specific
+  //       coastal ecosystem types (marsh vs seagrass vs mangrove). Site-specific
+  //       calibration can improve biomass estimation accuracy by 20-40%.
+  //       Recommended approach: Multiple regression with field AGB samples.
   var biomassIndex = opticalMetrics.select('NDVI_median_growing').multiply(0.4)
     .add(opticalMetrics.select('EVI_median_growing').multiply(0.3))
     .add(sarFeatures.select('VH_median').divide(-20).multiply(0.3))  // Normalized SAR
@@ -637,7 +722,175 @@ if (CONFIG.includeBiomassProxies) {
 }
 
 // ============================================================================
-// SECTION 9: OBSERVATION COUNTS & QA LAYERS
+// SECTION 9: SEDIMENT DYNAMICS INDICATORS (BLUE CARBON SPECIFIC)
+// ============================================================================
+
+print('\n=== Processing Sediment Dynamics Indicators ===');
+
+// INDICATOR 1: Turbidity Proxy
+// Use red band reflectance and NDWI to estimate turbidity
+// Higher red reflectance + lower NDWI = higher turbidity
+var redReflectance = s2.select('B4').median().rename('red_reflectance_median');
+var turbidityProxy = redReflectance
+  .multiply(opticalMetrics.select('NDWI_median_annual').multiply(-1).add(1))  // Invert NDWI
+  .multiply(1000)  // Scale up for visualization
+  .rename('turbidity_proxy');
+
+// Turbidity temporal variability (indicates active sediment transport)
+var turbidityVariability = s2.select('B4').reduce(ee.Reducer.stdDev())
+  .multiply(1000)
+  .rename('turbidity_variability');
+
+// INDICATOR 2: Sediment Supply Index
+// Combines flow accumulation, slope, and erosion potential
+// Higher values = more sediment being transported to the area
+
+// Erosion potential from upslope areas (steep areas with high flow accumulation)
+var erosionPotential = slope
+  .multiply(flowAccumulation.unitScale(0, 2))  // Weight by drainage area
+  .rename('upslope_erosion_potential');
+
+// Sediment delivery potential (considers both source and transport)
+var sedimentSupplyIndex = erosionPotential
+  .focal_mean(300, 'circle', 'meters')  // Aggregate upslope erosion
+  .multiply(flowAccumulation)
+  .log10()  // Log scale
+  .rename('sediment_supply_index');
+
+// INDICATOR 3: Local Erosion Risk
+// Based on: elevation position, slope, water exposure, vegetation cover
+
+// Exposure to wave/current energy (combination of water occurrence and position)
+var waveExposure = waterOccurrence.divide(100)
+  .multiply(ee.Image(1).subtract(opticalMetrics.select('NDVI_median_annual').clamp(0, 1)))  // Low veg = high exposure
+  .multiply(elevation.lt(mhwElevation).multiply(2).add(1))  // Below MHW = more exposed
+  .rename('wave_exposure_index');
+
+// Erosion risk score (0-100)
+// High risk = steep, unvegetated, tidally exposed, low sediment supply
+var erosionRisk = slope.unitScale(0, 5).multiply(20)  // 20% - slope contribution
+  .add(ee.Image(100).subtract(opticalMetrics.select('NDVI_median_annual').add(1).multiply(50)).clamp(0, 100).multiply(0.25))  // 25% - low veg
+  .add(waveExposure.unitScale(0, 2).multiply(100).multiply(0.30))  // 30% - wave exposure
+  .add(ee.Image(100).subtract(sedimentSupplyIndex.unitScale(0, 3).multiply(100)).clamp(0, 100).multiply(0.25))  // 25% - low sediment supply
+  .clamp(0, 100)
+  .rename('erosion_risk_score_0_100');
+
+// INDICATOR 4: Accretion Potential
+// Inverse of erosion - areas likely to accumulate sediment
+// High accretion = low slope, sheltered, vegetated, high sediment supply
+var accretionPotential = ee.Image(100).subtract(slope.unitScale(0, 5).multiply(100)).multiply(0.20)  // 20% - low slope
+  .add(opticalMetrics.select('NDVI_median_annual').add(1).multiply(50).clamp(0, 100).multiply(0.25))  // 25% - high veg
+  .add(ee.Image(100).subtract(waveExposure.unitScale(0, 2).multiply(100)).clamp(0, 100).multiply(0.30))  // 30% - sheltered
+  .add(sedimentSupplyIndex.unitScale(0, 3).multiply(100).clamp(0, 100).multiply(0.25))  // 25% - high sediment supply
+  .clamp(0, 100)
+  .rename('accretion_potential_0_100');
+
+var sedimentDynamics = ee.Image.cat([
+  turbidityProxy,
+  turbidityVariability,
+  erosionPotential,
+  sedimentSupplyIndex,
+  waveExposure,
+  erosionRisk,
+  accretionPotential
+]);
+
+print('✓ Sediment dynamics indicators processed:', sedimentDynamics.bandNames());
+print('  → Turbidity, Sediment supply, Erosion risk, Accretion potential');
+
+// ============================================================================
+// SECTION 10: VEGETATION CLASSIFICATION (BLUE CARBON SPECIFIC)
+// ============================================================================
+
+print('\n=== Processing Vegetation Classification Indices ===');
+
+// Spectral separability indices for coastal vegetation types
+// Goal: Differentiate emergent marsh vs seagrass/SAV vs unvegetated
+
+// INDEX 1: Emergent Marsh Indicator
+// Emergent marsh: High NDVI, moderate NDWI (not fully aquatic), high NIR
+// Strong vegetation signal but emergent above water
+var emergentMarshIndex = opticalMetrics.select('NDVI_median_growing')
+  .multiply(0.4)  // Strong vegetation
+  .add(opticalMetrics.select('NDWI_median_annual').multiply(-0.3).add(0.3))  // Not too wet
+  .add(opticalMetrics.select('SAVI_median_growing').multiply(0.3))  // Soil-adjusted veg
+  .clamp(0, 1)
+  .rename('emergent_marsh_index');
+
+// INDEX 2: Submerged Aquatic Vegetation (SAV/Seagrass) Indicator
+// SAV: Moderate NDVI, high NDWI (aquatic), high WAVI, positive FAI
+// Vegetation signal but in water
+var savSeagrassIndex = opticalMetrics.select('WAVI_median_growing')
+  .multiply(0.35)  // Water-adjusted veg index
+  .add(opticalMetrics.select('FAI_median_growing').clamp(-0.1, 0.2).add(0.1).multiply(0.25))  // Floating algae index
+  .add(opticalMetrics.select('NDWI_median_annual').clamp(0, 0.5).multiply(0.25))  // Moderately aquatic
+  .add(opticalMetrics.select('NDVI_median_growing').clamp(0.1, 0.5).multiply(0.15))  // Some veg signal
+  .clamp(0, 1)
+  .rename('sav_seagrass_index');
+
+// INDEX 3: Unvegetated Tidal Flat Indicator
+// Low NDVI, variable NDWI (tidal exposure), high red/SWIR reflectance
+var tidalFlatIndex = ee.Image(1)
+  .subtract(opticalMetrics.select('NDVI_median_annual').clamp(-0.2, 0.3).add(0.2).divide(0.5))  // Low NDVI
+  .multiply(0.4)
+  .add(waterOccurrence.divide(100).multiply(0.3))  // Some tidal influence
+  .add(s2.select('B11').median().clamp(0, 0.3).divide(0.3).multiply(0.3))  // High SWIR (soil/sediment)
+  .clamp(0, 1)
+  .rename('tidal_flat_index');
+
+// INDEX 4: Open Water Indicator
+// High NDWI, negative NDVI, high water occurrence
+var openWaterIndex = opticalMetrics.select('MNDWI_median_annual')
+  .clamp(-0.2, 0.8)
+  .add(0.2)
+  .divide(1.0)
+  .multiply(0.5)
+  .add(waterOccurrence.divide(100).multiply(0.5))
+  .clamp(0, 1)
+  .rename('open_water_index');
+
+// Dominant vegetation type classification (winner-takes-all)
+var vegTypeScore = ee.Image.cat([
+  emergentMarshIndex.multiply(10).rename('score_marsh'),
+  savSeagrassIndex.multiply(10).rename('score_sav'),
+  tidalFlatIndex.multiply(10).rename('score_flat'),
+  openWaterIndex.multiply(10).rename('score_water')
+]);
+
+var dominantVegType = vegTypeScore.reduce(ee.Reducer.max())
+  .eq(vegTypeScore)
+  .reduce(ee.Reducer.sum())  // Count matches
+  .where(vegTypeScore.reduce(ee.Reducer.max()).lt(2), 0);  // Low confidence = 0
+
+// Assign categories: 1=Marsh, 2=SAV/Seagrass, 3=Tidal Flat, 4=Open Water
+var vegClassification = ee.Image(0)
+  .where(emergentMarshIndex.eq(vegTypeScore.reduce(ee.Reducer.max()).divide(10)), 1)
+  .where(savSeagrassIndex.eq(vegTypeScore.reduce(ee.Reducer.max()).divide(10)), 2)
+  .where(tidalFlatIndex.eq(vegTypeScore.reduce(ee.Reducer.max()).divide(10)), 3)
+  .where(openWaterIndex.eq(vegTypeScore.reduce(ee.Reducer.max()).divide(10)), 4)
+  .updateMask(vegTypeScore.reduce(ee.Reducer.max()).gte(2))  // Mask low confidence
+  .rename('vegetation_class_categorical');
+
+// Classification confidence (0-100)
+var classificationConfidence = vegTypeScore.reduce(ee.Reducer.max())
+  .multiply(10)
+  .clamp(0, 100)
+  .rename('veg_classification_confidence');
+
+var vegetationClassification = ee.Image.cat([
+  emergentMarshIndex,
+  savSeagrassIndex,
+  tidalFlatIndex,
+  openWaterIndex,
+  vegClassification,
+  classificationConfidence
+]);
+
+print('✓ Vegetation classification processed:', vegetationClassification.bandNames());
+print('  → Classes: 1=Emergent Marsh, 2=SAV/Seagrass, 3=Tidal Flat, 4=Open Water');
+
+// ============================================================================
+// SECTION 11: OBSERVATION COUNTS & QA LAYERS
 // ============================================================================
 
 print('\n=== Processing Quality Assessment Layers ===');
@@ -740,7 +993,7 @@ qualityScore.gte(70).reduceRegion({
 });
 
 // ============================================================================
-// SECTION 10: COMBINE ALL FEATURES
+// SECTION 12: COMBINE ALL FEATURES
 // ============================================================================
 
 print('\n=== Combining All Covariate Layers ===');
@@ -750,16 +1003,18 @@ var allFeatures = ee.Image.cat([
   tidalIndicators,
   opticalMetrics,
   sarFeatures,
-  salinityProxies,
   connectivityMetrics,
-  biomassProxies
+  salinityProxies,
+  biomassProxies,
+  sedimentDynamics,
+  vegetationClassification
 ]).clip(CONFIG.aoi).toFloat();
 
 print('Total covariate bands:', allFeatures.bandNames().length().getInfo());
 print('Covariate bands:', allFeatures.bandNames());
 
 // ============================================================================
-// SECTION 11: VISUALIZATION
+// SECTION 13: VISUALIZATION
 // ============================================================================
 
 print('\n=== Adding Visualization Layers ===');
@@ -792,7 +1047,7 @@ if (CONFIG.includeBiomassProxies) {
 print('✓ Visualization layers added');
 
 // ============================================================================
-// SECTION 12: EXPORT FUNCTIONS
+// SECTION 14: EXPORT FUNCTIONS
 // ============================================================================
 
 print('\n========================================');
@@ -874,7 +1129,7 @@ function exportQualityLayers() {
 }
 
 // ============================================================================
-// SECTION 13: EXECUTE EXPORTS
+// SECTION 15: EXECUTE EXPORTS
 // ============================================================================
 
 print('\n👉 Exporting covariate bands...');

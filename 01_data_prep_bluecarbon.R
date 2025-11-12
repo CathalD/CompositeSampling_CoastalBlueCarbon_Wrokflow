@@ -72,7 +72,7 @@ calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_c
 }
 
 #' Assign bulk density defaults by stratum if missing
-assign_bd_defaults <- function(df, bd_col = "bulk_density_g_cm3", 
+assign_bd_defaults <- function(df, bd_col = "bulk_density_g_cm3",
                                stratum_col = "stratum") {
   df[[bd_col]] <- ifelse(
     is.na(df[[bd_col]]),
@@ -86,6 +86,31 @@ assign_bd_defaults <- function(df, bd_col = "bulk_density_g_cm3",
     df[[bd_col]]
   )
   return(df)
+}
+
+#' Calculate required sample size for VM0033 compliance
+#' Based on: n = (z * CV / target_precision)^2
+calculate_required_n <- function(cv, target_precision = VM0033_TARGET_PRECISION,
+                                confidence = CONFIDENCE_LEVEL) {
+  z <- qnorm(1 - (1 - confidence) / 2)  # 1.96 for 95% CI
+  n <- ceiling((z * cv / target_precision)^2)
+  return(max(n, VM0033_MIN_CORES))  # Ensure at least minimum
+}
+
+#' Calculate achieved precision from sample size and CV
+calculate_achieved_precision <- function(n, cv, confidence = CONFIDENCE_LEVEL) {
+  if (n < 2) return(NA)
+  z <- qnorm(1 - (1 - confidence) / 2)
+  precision <- (z * cv) / sqrt(n)
+  return(precision)
+}
+
+#' Calculate depth profile completeness (0-100%)
+calculate_profile_completeness <- function(depth_top, depth_bottom, max_depth = MAX_CORE_DEPTH) {
+  # Calculate total depth sampled
+  total_sampled <- sum(depth_bottom - depth_top, na.rm = TRUE)
+  completeness_pct <- (total_sampled / max_depth) * 100
+  return(min(completeness_pct, 100))  # Cap at 100%
 }
 
 # ============================================================================
@@ -306,7 +331,7 @@ if (!validate_strata(cores_complete$stratum)) {
   stop("Invalid stratum assignments in merged data")
 }
 
-# Calculate stratum statistics
+# Calculate stratum statistics with uncertainty metrics (CHANGE #3)
 stratum_stats <- cores_complete %>%
   group_by(stratum) %>%
   summarise(
@@ -316,16 +341,112 @@ stratum_stats <- cores_complete %>%
     max_depth = max(depth_cm),
     mean_soc = mean(soc_g_kg, na.rm = TRUE),
     sd_soc = sd(soc_g_kg, na.rm = TRUE),
+    cv_soc = (sd(soc_g_kg, na.rm = TRUE) / mean(soc_g_kg, na.rm = TRUE)) * 100,
+    se_soc = sd(soc_g_kg, na.rm = TRUE) / sqrt(n()),
     .groups = "drop"
   ) %>%
   arrange(desc(n_cores))
 
-log_message("Stratum summary:")
+log_message("Stratum summary with uncertainty metrics:")
 print(stratum_stats)
 
 # Save stratum summary
 write_csv(stratum_stats, "data_processed/cores_summary_by_stratum.csv")
 log_message("Saved stratum summary")
+
+# ============================================================================
+# VM0033 SAMPLE SIZE VALIDATION & STATISTICAL POWER (CHANGE #2)
+# ============================================================================
+
+log_message("Validating VM0033 sample size requirements...")
+
+# Calculate power analysis for each stratum
+vm0033_compliance <- stratum_stats %>%
+  mutate(
+    # Check minimum sample size
+    meets_min_n = n_cores >= VM0033_MIN_CORES,
+
+    # Calculate required N for target precision
+    required_n_20pct = mapply(calculate_required_n, cv_soc, 20, CONFIDENCE_LEVEL),
+    required_n_15pct = mapply(calculate_required_n, cv_soc, 15, CONFIDENCE_LEVEL),
+    required_n_10pct = mapply(calculate_required_n, cv_soc, 10, CONFIDENCE_LEVEL),
+
+    # Calculate achieved precision with current n
+    achieved_precision_pct = mapply(calculate_achieved_precision, n_cores, cv_soc, CONFIDENCE_LEVEL),
+
+    # Additional cores needed for different precision targets
+    additional_for_20pct = pmax(0, required_n_20pct - n_cores),
+    additional_for_15pct = pmax(0, required_n_15pct - n_cores),
+    additional_for_10pct = pmax(0, required_n_10pct - n_cores),
+
+    # VM0033 compliance flags
+    meets_20pct_precision = achieved_precision_pct <= 20,
+    meets_15pct_precision = achieved_precision_pct <= 15,
+    meets_10pct_precision = achieved_precision_pct <= 10,
+
+    # Overall compliance (min 3 cores AND ≤20% precision)
+    vm0033_compliant = meets_min_n & meets_20pct_precision,
+
+    # Status assessment
+    status = case_when(
+      !meets_min_n ~ "INSUFFICIENT (< 3 cores)",
+      achieved_precision_pct <= 10 ~ "EXCELLENT (≤10%)",
+      achieved_precision_pct <= 15 ~ "GOOD (≤15%)",
+      achieved_precision_pct <= 20 ~ "ACCEPTABLE (≤20%)",
+      achieved_precision_pct <= 30 ~ "MARGINAL (>20%, <30%)",
+      TRUE ~ "POOR (≥30%)"
+    )
+  )
+
+cat("\n========================================\n")
+cat("VM0033 SAMPLE SIZE COMPLIANCE\n")
+cat("========================================\n\n")
+
+# Print compliance by stratum
+for (i in 1:nrow(vm0033_compliance)) {
+  cat(sprintf("Stratum: %s\n", vm0033_compliance$stratum[i]))
+  cat(sprintf("  Current samples: %d cores\n", vm0033_compliance$n_cores[i]))
+  cat(sprintf("  CV: %.1f%%\n", vm0033_compliance$cv_soc[i]))
+  cat(sprintf("  Achieved precision: %.1f%% (at 95%% CI)\n",
+              vm0033_compliance$achieved_precision_pct[i]))
+  cat(sprintf("  Status: %s\n", vm0033_compliance$status[i]))
+  cat(sprintf("  VM0033 Compliant: %s\n",
+              ifelse(vm0033_compliance$vm0033_compliant[i], "✓ YES", "✗ NO")))
+
+  # Recommendations
+  if (!vm0033_compliance$vm0033_compliant[i]) {
+    cat("\n  Recommendations:\n")
+    if (!vm0033_compliance$meets_min_n[i]) {
+      cat(sprintf("    • Add %d cores to meet minimum requirement\n",
+                  VM0033_MIN_CORES - vm0033_compliance$n_cores[i]))
+    }
+    if (vm0033_compliance$additional_for_20pct[i] > 0) {
+      cat(sprintf("    • Add %d cores to achieve 20%% precision\n",
+                  vm0033_compliance$additional_for_20pct[i]))
+    }
+    if (vm0033_compliance$additional_for_15pct[i] > 0) {
+      cat(sprintf("    • Add %d cores to achieve 15%% precision\n",
+                  vm0033_compliance$additional_for_15pct[i]))
+    }
+  }
+  cat("\n")
+}
+
+# Overall project status
+n_compliant <- sum(vm0033_compliance$vm0033_compliant)
+n_total <- nrow(vm0033_compliance)
+
+cat(sprintf("Overall: %d/%d strata meet VM0033 requirements\n\n",
+            n_compliant, n_total))
+
+if (n_compliant < n_total) {
+  log_message(sprintf("WARNING: %d strata do not meet VM0033 requirements",
+                      n_total - n_compliant), "WARNING")
+}
+
+# Save VM0033 compliance report
+write_csv(vm0033_compliance, "data_processed/vm0033_compliance_report.csv")
+log_message("Saved VM0033 compliance report")
 
 # ============================================================================
 # BULK DENSITY HANDLING
@@ -341,19 +462,98 @@ log_message(sprintf("BD missing: %d samples", n_bd_missing))
 
 if (n_bd_missing > 0) {
   log_message("Applying stratum-specific BD defaults to missing values")
-  
+
   # Show defaults being applied
   cat("\nBulk density defaults by stratum:\n")
   for (s in names(BD_DEFAULTS)) {
     cat(sprintf("  %s: %.2f g/cm³\n", s, BD_DEFAULTS[[s]]))
   }
-  
+
   cores_complete <- assign_bd_defaults(cores_complete)
-  
+
   # Flag which samples have estimated BD
   cores_complete <- cores_complete %>%
     mutate(bd_estimated = !bd_measured)
 }
+
+# ============================================================================
+# BULK DENSITY TRANSPARENCY REPORT (CHANGE #4)
+# ============================================================================
+
+log_message("Generating bulk density transparency report...")
+
+# Calculate BD statistics by stratum
+bd_transparency <- cores_complete %>%
+  group_by(stratum) %>%
+  summarise(
+    n_samples = n(),
+    n_measured = sum(bd_measured),
+    n_estimated = sum(!bd_measured),
+    pct_measured = (sum(bd_measured) / n()) * 100,
+    pct_estimated = (sum(!bd_measured) / n()) * 100,
+
+    # Measured BD stats (where available)
+    mean_bd_measured = ifelse(sum(bd_measured) > 0,
+                               mean(bulk_density_g_cm3[bd_measured], na.rm = TRUE),
+                               NA),
+    sd_bd_measured = ifelse(sum(bd_measured) > 1,
+                            sd(bulk_density_g_cm3[bd_measured], na.rm = TRUE),
+                            NA),
+
+    # Estimated BD (from defaults)
+    mean_bd_estimated = ifelse(sum(!bd_measured) > 0,
+                                mean(bulk_density_g_cm3[!bd_measured], na.rm = TRUE),
+                                NA),
+
+    # Overall BD
+    mean_bd_all = mean(bulk_density_g_cm3, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+cat("\n========================================\n")
+cat("BULK DENSITY TRANSPARENCY REPORT\n")
+cat("========================================\n\n")
+
+cat(sprintf("Total samples: %d\n", nrow(cores_complete)))
+cat(sprintf("  Measured BD: %d (%.1f%%)\n",
+            sum(cores_complete$bd_measured),
+            100 * sum(cores_complete$bd_measured) / nrow(cores_complete)))
+cat(sprintf("  Estimated BD: %d (%.1f%%)\n\n",
+            sum(!cores_complete$bd_measured),
+            100 * sum(!cores_complete$bd_measured) / nrow(cores_complete)))
+
+cat("By stratum:\n")
+for (i in 1:nrow(bd_transparency)) {
+  cat(sprintf("\n%s:\n", bd_transparency$stratum[i]))
+  cat(sprintf("  Measured: %d/%d (%.1f%%)\n",
+              bd_transparency$n_measured[i],
+              bd_transparency$n_samples[i],
+              bd_transparency$pct_measured[i]))
+
+  if (!is.na(bd_transparency$mean_bd_measured[i])) {
+    cat(sprintf("  Mean measured BD: %.2f ± %.2f g/cm³\n",
+                bd_transparency$mean_bd_measured[i],
+                ifelse(is.na(bd_transparency$sd_bd_measured[i]), 0,
+                       bd_transparency$sd_bd_measured[i])))
+  }
+
+  if (bd_transparency$n_estimated[i] > 0) {
+    cat(sprintf("  Estimated BD (default): %.2f g/cm³\n",
+                bd_transparency$mean_bd_estimated[i]))
+  }
+
+  cat(sprintf("  Overall mean BD: %.2f g/cm³\n",
+              bd_transparency$mean_bd_all[i]))
+}
+
+cat("\n📝 Note: Estimated BD values are based on literature defaults.\n")
+cat("   Carbon stock uncertainty will be higher for samples with estimated BD.\n")
+cat("   VM0033 recommends measuring BD for all cores when possible.\n\n")
+
+# Save BD transparency report
+write_csv(bd_transparency, "data_processed/bd_transparency_report.csv")
+log_message("Saved BD transparency report")
 
 # ============================================================================
 # CALCULATE CARBON STOCKS
@@ -398,6 +598,201 @@ carbon_by_stratum <- core_totals %>%
 
 log_message("Carbon stock summary by stratum:")
 print(carbon_by_stratum)
+
+# ============================================================================
+# DEPTH PROFILE COMPLETENESS (CHANGE #7)
+# ============================================================================
+
+log_message("Calculating depth profile completeness...")
+
+# Calculate completeness per core
+core_depth_completeness <- cores_complete %>%
+  group_by(core_id, stratum, core_type) %>%
+  summarise(
+    n_samples = n(),
+    min_depth = min(depth_top_cm),
+    max_depth = max(depth_bottom_cm),
+    depth_range = max(depth_bottom_cm) - min(depth_top_cm),
+    total_sampled = sum(depth_bottom_cm - depth_top_cm),
+    completeness_pct = calculate_profile_completeness(depth_top_cm, depth_bottom_cm, MAX_CORE_DEPTH),
+
+    # Check for depth gaps
+    has_gaps = any(diff(sort(c(depth_top_cm, depth_bottom_cm))) > 5),
+
+    # Classification
+    profile_quality = case_when(
+      completeness_pct >= 90 ~ "Complete (≥90%)",
+      completeness_pct >= 70 ~ "Good (70-89%)",
+      completeness_pct >= 50 ~ "Moderate (50-69%)",
+      TRUE ~ "Incomplete (<50%)"
+    ),
+
+    .groups = "drop"
+  )
+
+# Summary by stratum
+depth_completeness_summary <- core_depth_completeness %>%
+  group_by(stratum) %>%
+  summarise(
+    n_cores = n(),
+    mean_completeness = mean(completeness_pct),
+    sd_completeness = sd(completeness_pct),
+    min_completeness = min(completeness_pct),
+    max_completeness = max(completeness_pct),
+    n_complete = sum(completeness_pct >= 90),
+    n_good = sum(completeness_pct >= 70 & completeness_pct < 90),
+    n_moderate = sum(completeness_pct >= 50 & completeness_pct < 70),
+    n_incomplete = sum(completeness_pct < 50),
+    .groups = "drop"
+  )
+
+cat("\n========================================\n")
+cat("DEPTH PROFILE COMPLETENESS\n")
+cat("========================================\n\n")
+
+for (i in 1:nrow(depth_completeness_summary)) {
+  cat(sprintf("%s:\n", depth_completeness_summary$stratum[i]))
+  cat(sprintf("  Mean completeness: %.1f%% ± %.1f%%\n",
+              depth_completeness_summary$mean_completeness[i],
+              depth_completeness_summary$sd_completeness[i]))
+  cat(sprintf("  Range: %.1f%% - %.1f%%\n",
+              depth_completeness_summary$min_completeness[i],
+              depth_completeness_summary$max_completeness[i]))
+  cat(sprintf("  Complete profiles (≥90%%): %d/%d\n",
+              depth_completeness_summary$n_complete[i],
+              depth_completeness_summary$n_cores[i]))
+  cat(sprintf("  Good profiles (70-89%%): %d/%d\n",
+              depth_completeness_summary$n_good[i],
+              depth_completeness_summary$n_cores[i]))
+  if (depth_completeness_summary$n_incomplete[i] > 0) {
+    cat(sprintf("  ⚠ Incomplete profiles (<50%%): %d\n",
+                depth_completeness_summary$n_incomplete[i]))
+  }
+  cat("\n")
+}
+
+# Save depth completeness report
+write_csv(core_depth_completeness, "data_processed/core_depth_completeness.csv")
+write_csv(depth_completeness_summary, "data_processed/depth_completeness_summary.csv")
+log_message("Saved depth completeness reports")
+
+# ============================================================================
+# CORE TYPE COMPARISON: HR vs COMPOSITE (CHANGE #6)
+# ============================================================================
+
+log_message("Analyzing HR vs Composite core differences...")
+
+# Check if core_type column exists and has values
+if ("core_type" %in% names(cores_complete) &&
+    any(tolower(cores_complete$core_type) %in% c("hr", "composite", "high-res", "high resolution"))) {
+
+  # Standardize core type names
+  cores_complete <- cores_complete %>%
+    mutate(
+      core_type_clean = case_when(
+        tolower(core_type) %in% c("hr", "high-res", "high resolution") ~ "HR",
+        tolower(core_type) %in% c("composite", "comp") ~ "Composite",
+        TRUE ~ "Other"
+      )
+    )
+
+  # Summary by core type and stratum
+  core_type_summary <- cores_complete %>%
+    filter(core_type_clean %in% c("HR", "Composite")) %>%
+    group_by(stratum, core_type_clean) %>%
+    summarise(
+      n_cores = n_distinct(core_id),
+      n_samples = n(),
+      mean_soc = mean(soc_g_kg, na.rm = TRUE),
+      sd_soc = sd(soc_g_kg, na.rm = TRUE),
+      se_soc = sd(soc_g_kg, na.rm = TRUE) / sqrt(n()),
+      mean_bd = mean(bulk_density_g_cm3, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Pivot for comparison
+  core_comparison <- core_type_summary %>%
+    select(stratum, core_type_clean, mean_soc, sd_soc, n_cores) %>%
+    pivot_wider(
+      names_from = core_type_clean,
+      values_from = c(mean_soc, sd_soc, n_cores),
+      names_sep = "_"
+    )
+
+  # Statistical tests (t-test) by stratum
+  statistical_tests <- list()
+
+  for (s in unique(cores_complete$stratum)) {
+    hr_data <- cores_complete %>%
+      filter(stratum == s, core_type_clean == "HR") %>%
+      pull(soc_g_kg)
+
+    comp_data <- cores_complete %>%
+      filter(stratum == s, core_type_clean == "Composite") %>%
+      pull(soc_g_kg)
+
+    if (length(hr_data) >= 3 && length(comp_data) >= 3) {
+      test_result <- t.test(hr_data, comp_data)
+
+      statistical_tests[[s]] <- data.frame(
+        stratum = s,
+        hr_mean = mean(hr_data, na.rm = TRUE),
+        comp_mean = mean(comp_data, na.rm = TRUE),
+        diff = mean(hr_data, na.rm = TRUE) - mean(comp_data, na.rm = TRUE),
+        t_statistic = test_result$statistic,
+        p_value = test_result$p.value,
+        significant = test_result$p.value < 0.05,
+        ci_lower = test_result$conf.int[1],
+        ci_upper = test_result$conf.int[2]
+      )
+    }
+  }
+
+  if (length(statistical_tests) > 0) {
+    statistical_tests_df <- bind_rows(statistical_tests)
+
+    cat("\n========================================\n")
+    cat("HR vs COMPOSITE CORE COMPARISON\n")
+    cat("========================================\n\n")
+
+    cat("Statistical Tests (Two-sample t-tests):\n\n")
+
+    for (i in 1:nrow(statistical_tests_df)) {
+      cat(sprintf("%s:\n", statistical_tests_df$stratum[i]))
+      cat(sprintf("  HR mean SOC: %.1f g/kg\n", statistical_tests_df$hr_mean[i]))
+      cat(sprintf("  Composite mean SOC: %.1f g/kg\n", statistical_tests_df$comp_mean[i]))
+      cat(sprintf("  Difference: %.1f g/kg\n", statistical_tests_df$diff[i]))
+      cat(sprintf("  t-statistic: %.2f\n", statistical_tests_df$t_statistic[i]))
+      cat(sprintf("  p-value: %.4f %s\n",
+                  statistical_tests_df$p_value[i],
+                  ifelse(statistical_tests_df$significant[i], "**", "")))
+      cat(sprintf("  95%% CI: [%.1f, %.1f]\n",
+                  statistical_tests_df$ci_lower[i],
+                  statistical_tests_df$ci_upper[i]))
+
+      if (statistical_tests_df$significant[i]) {
+        cat("  ✓ Significant difference detected (p < 0.05)\n")
+        cat("  ⚠ HR and Composite cores should be analyzed separately\n")
+      } else {
+        cat("  ✓ No significant difference (p ≥ 0.05)\n")
+        cat("  → Paired sampling assumption supported\n")
+      }
+      cat("\n")
+    }
+
+    # Save core type comparison
+    write_csv(core_type_summary, "data_processed/core_type_summary.csv")
+    write_csv(statistical_tests_df, "data_processed/core_type_statistical_tests.csv")
+    log_message("Saved core type comparison reports")
+
+  } else {
+    log_message("Insufficient data for HR vs Composite statistical tests", "WARNING")
+  }
+
+} else {
+  log_message("core_type not specified or insufficient data for comparison", "WARNING")
+  cat("\n⚠ Core type comparison skipped: core_type column not found or insufficient data\n\n")
+}
 
 # ============================================================================
 # ADD FINAL QA FLAGS
@@ -461,15 +856,24 @@ qa_report <- list(
   total_samples = nrow(cores_complete),
   samples_passed_qa = n_pass,
   samples_failed_qa = n_fail,
-  
+
   # By stratum
   cores_by_stratum = stratum_stats,
   carbon_by_stratum = carbon_by_stratum,
-  
+
+  # VM0033 compliance (NEW)
+  vm0033_compliance = vm0033_compliance,
+  n_compliant_strata = sum(vm0033_compliance$vm0033_compliant),
+  n_total_strata = nrow(vm0033_compliance),
+
   # Bulk density
   bd_measured = n_bd_measured,
   bd_estimated = n_bd_missing,
-  
+  bd_transparency = bd_transparency,
+
+  # Depth profile completeness (NEW)
+  depth_completeness_summary = depth_completeness_summary,
+
   # QA flags
   qa_issues = list(
     invalid_depths = n_depth_invalid,
@@ -478,7 +882,7 @@ qa_report <- list(
     cores_no_location = length(cores_no_location),
     cores_no_samples = length(cores_no_samples)
   ),
-  
+
   # Metadata
   processing_date = Sys.Date(),
   project_name = PROJECT_NAME,
@@ -513,18 +917,44 @@ for (i in 1:nrow(stratum_stats)) {
 }
 
 cat("\nBulk density:\n")
-cat(sprintf("  Measured: %d samples\n", n_bd_measured))
-cat(sprintf("  Estimated: %d samples\n", n_bd_missing))
+cat(sprintf("  Measured: %d samples (%.1f%%)\n", n_bd_measured,
+            100 * n_bd_measured / nrow(cores_complete)))
+cat(sprintf("  Estimated: %d samples (%.1f%%)\n", n_bd_missing,
+            100 * n_bd_missing / nrow(cores_complete)))
 
-cat("\nOutputs saved to data_processed/\n")
-cat("  - cores_clean_bluecarbon.rds\n")
-cat("  - cores_clean_bluecarbon.csv\n")
-cat("  - cores_summary_by_stratum.csv\n")
-cat("  - carbon_by_stratum_summary.csv\n")
-cat("  - qa_report.rds\n")
+cat("\nVM0033 Compliance:\n")
+cat(sprintf("  Compliant strata: %d/%d\n",
+            sum(vm0033_compliance$vm0033_compliant),
+            nrow(vm0033_compliance)))
+if (sum(vm0033_compliance$vm0033_compliant) < nrow(vm0033_compliance)) {
+  cat("  ⚠ Review vm0033_compliance_report.csv for details\n")
+}
+
+cat("\nOutputs saved to data_processed/:\n")
+cat("  Core Data:\n")
+cat("    - cores_clean_bluecarbon.rds\n")
+cat("    - cores_clean_bluecarbon.csv\n")
+cat("    - core_totals.csv\n")
+cat("  Summaries:\n")
+cat("    - cores_summary_by_stratum.csv\n")
+cat("    - carbon_by_stratum_summary.csv\n")
+cat("  VM0033 & Uncertainty:\n")
+cat("    - vm0033_compliance_report.csv (NEW)\n")
+cat("  Bulk Density:\n")
+cat("    - bd_transparency_report.csv (NEW)\n")
+cat("  Depth Profiles:\n")
+cat("    - core_depth_completeness.csv (NEW)\n")
+cat("    - depth_completeness_summary.csv (NEW)\n")
+cat("  Core Type Comparison:\n")
+cat("    - core_type_summary.csv (if applicable)\n")
+cat("    - core_type_statistical_tests.csv (if applicable)\n")
+cat("  QA Report:\n")
+cat("    - qa_report.rds\n")
 
 cat("\nNext steps:\n")
-cat("  1. Review QA report and stratum summaries\n")
-cat("  2. Run: source('02_exploratory_analysis_bluecarbon.R')\n\n")
+cat("  1. Review VM0033 compliance report\n")
+cat("  2. Check BD transparency and depth completeness\n")
+cat("  3. If needed, collect additional samples for non-compliant strata\n")
+cat("  4. Run: source('02_exploratory_analysis_bluecarbon.R')\n\n")
 
 log_message("=== MODULE 01 COMPLETE ===")
