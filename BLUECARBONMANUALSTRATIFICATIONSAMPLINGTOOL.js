@@ -898,6 +898,16 @@ generateSamplingButton.onClick(function() {
 
     // Generate subsamples
     compositesWithProps.toList(params.compositesPerStratum).evaluate(function(compList) {
+      // Add null check to prevent forEach error
+      if (!compList || compList.length === 0) {
+        print('⚠️ Warning: No composites generated for stratum:', stratumName);
+        processedStrata++;
+        if (processedStrata === numStrata) {
+          finalizeSampling();
+        }
+        return;
+      }
+
       compList.forEach(function(compFeature) {
         var comp = ee.Feature(compFeature);
         var subpts = Utils.randomPointsInPolygon(
@@ -938,40 +948,59 @@ generateSamplingButton.onClick(function() {
     var hrCoresList = AppState.hrCores.toList(AppState.hrCores.size());
 
     hrCoresList.evaluate(function(coreList) {
+      // Add null check
+      if (!coreList || coreList.length === 0) {
+        print('⚠️ Warning: No HR cores generated');
+        displaySamplingResults();
+        return;
+      }
+
       var pairedIds = [];
-      var usedCoreIndices = [];
+      var processedCores = 0;
+      var coresToPair = Math.min(numToPair, coreList.length);
+
+      // If no pairing needed, skip to display
+      if (coresToPair === 0) {
+        finalizePairing([]);
+        return;
+      }
 
       // For each HR core (up to numToPair), find nearest composite
-      for (var i = 0; i < Math.min(numToPair, coreList.length); i++) {
-        var coreFeature = coreList[i];
-        var core = ee.Feature(coreFeature);
-        var coreGeom = core.geometry();
+      for (var i = 0; i < coresToPair; i++) {
+        // Use closure to capture current index
+        (function(coreIndex) {
+          var coreFeature = coreList[coreIndex];
+          var core = ee.Feature(coreFeature);
+          var coreGeom = core.geometry();
 
-        // Find composites within buffer distance, not already paired
-        var candidateComposites = AppState.composites
-          .filterBounds(coreGeom.buffer(CONFIG.DEFAULT_MAX_PAIRING_DISTANCE, CONFIG.MAX_ERROR));
+          // Find composites within buffer distance, not already paired
+          var candidateComposites = AppState.composites
+            .filterBounds(coreGeom.buffer(CONFIG.DEFAULT_MAX_PAIRING_DISTANCE, CONFIG.MAX_ERROR));
 
-        // Add distance property and sort
-        var withDistance = candidateComposites.map(function(comp) {
-          var dist = comp.geometry().distance(coreGeom, CONFIG.MAX_ERROR);
-          return comp.set('_temp_distance', dist);
-        });
+          // Add distance property and sort
+          var withDistance = candidateComposites.map(function(comp) {
+            var dist = comp.geometry().distance(coreGeom, CONFIG.MAX_ERROR);
+            return comp.set('_temp_distance', dist);
+          });
 
-        // Get the nearest composite not already paired
-        var sortedComps = withDistance.sort('_temp_distance');
-        var nearestComp = sortedComps.first();
+          // Get the nearest composite not already paired
+          var sortedComps = withDistance.sort('_temp_distance');
+          var nearestComp = sortedComps.first();
 
-        // Get the composite_id to mark as paired
-        nearestComp.evaluate(function(compData) {
-          if (compData && compData.properties && compData.properties.composite_id !== undefined) {
-            pairedIds.push(compData.properties.composite_id);
-          }
+          // Get the composite_id to mark as paired
+          nearestComp.evaluate(function(compData) {
+            if (compData && compData.properties && compData.properties.composite_id !== undefined) {
+              pairedIds.push(compData.properties.composite_id);
+            }
 
-          // When all cores processed, finalize pairing
-          if (pairedIds.length === numToPair || i === coreList.length - 1) {
-            finalizePairing(pairedIds);
-          }
-        });
+            processedCores++;
+
+            // When all cores processed, finalize pairing
+            if (processedCores === coresToPair) {
+              finalizePairing(pairedIds);
+            }
+          });
+        })(i);
       }
 
       function finalizePairing(pairedIds) {
