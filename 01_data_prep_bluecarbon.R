@@ -683,115 +683,168 @@ log_message("Saved depth completeness reports")
 log_message("Analyzing HR vs Composite core differences...")
 
 # Check if core_type column exists and has values
-if ("core_type" %in% names(cores_complete) &&
-    any(tolower(cores_complete$core_type) %in% c("hr", "composite", "high-res", "high resolution"))) {
+if ("core_type" %in% names(cores_complete)) {
 
   # Standardize core type names
   cores_complete <- cores_complete %>%
     mutate(
       core_type_clean = case_when(
-        tolower(core_type) %in% c("hr", "high-res", "high resolution") ~ "HR",
-        tolower(core_type) %in% c("composite", "comp") ~ "Composite",
+        tolower(core_type) %in% c("hr", "high-res", "high resolution", "high res") ~ "HR",
+        tolower(core_type) %in% c("paired composite", "paired comp", "paired") ~ "Paired Composite",
+        tolower(core_type) %in% c("unpaired composite", "unpaired comp", "unpaired", "composite", "comp") ~ "Unpaired Composite",
         TRUE ~ "Other"
       )
     )
 
-  # Summary by core type and stratum
-  core_type_summary <- cores_complete %>%
-    filter(core_type_clean %in% c("HR", "Composite")) %>%
-    group_by(stratum, core_type_clean) %>%
+  # Count by core type
+  core_type_counts <- cores_complete %>%
+    group_by(core_type_clean) %>%
     summarise(
       n_cores = n_distinct(core_id),
       n_samples = n(),
-      mean_soc = mean(soc_g_kg, na.rm = TRUE),
-      sd_soc = sd(soc_g_kg, na.rm = TRUE),
-      se_soc = sd(soc_g_kg, na.rm = TRUE) / sqrt(n()),
-      mean_bd = mean(bulk_density_g_cm3, na.rm = TRUE),
       .groups = "drop"
     )
 
-  # Pivot for comparison
-  core_comparison <- core_type_summary %>%
-    select(stratum, core_type_clean, mean_soc, sd_soc, n_cores) %>%
-    pivot_wider(
-      names_from = core_type_clean,
-      values_from = c(mean_soc, sd_soc, n_cores),
-      names_sep = "_"
-    )
+  cat("\n========================================\n")
+  cat("CORE TYPE DISTRIBUTION\n")
+  cat("========================================\n\n")
+  print(core_type_counts)
 
-  # Statistical tests (t-test) by stratum
-  statistical_tests <- list()
+  # Only proceed with comparison if we have both HR and Paired Composite cores
+  has_hr <- any(cores_complete$core_type_clean == "HR")
+  has_paired_comp <- any(cores_complete$core_type_clean == "Paired Composite")
 
-  for (s in unique(cores_complete$stratum)) {
-    hr_data <- cores_complete %>%
-      filter(stratum == s, core_type_clean == "HR") %>%
-      pull(soc_g_kg)
+  if (has_hr && has_paired_comp) {
 
-    comp_data <- cores_complete %>%
-      filter(stratum == s, core_type_clean == "Composite") %>%
-      pull(soc_g_kg)
-
-    if (length(hr_data) >= 3 && length(comp_data) >= 3) {
-      test_result <- t.test(hr_data, comp_data)
-
-      statistical_tests[[s]] <- data.frame(
-        stratum = s,
-        hr_mean = mean(hr_data, na.rm = TRUE),
-        comp_mean = mean(comp_data, na.rm = TRUE),
-        diff = mean(hr_data, na.rm = TRUE) - mean(comp_data, na.rm = TRUE),
-        t_statistic = test_result$statistic,
-        p_value = test_result$p.value,
-        significant = test_result$p.value < 0.05,
-        ci_lower = test_result$conf.int[1],
-        ci_upper = test_result$conf.int[2]
+    # Summary by core type and stratum (only HR and Paired Composite)
+    core_type_summary <- cores_complete %>%
+      filter(core_type_clean %in% c("HR", "Paired Composite")) %>%
+      group_by(stratum, core_type_clean) %>%
+      summarise(
+        n_cores = n_distinct(core_id),
+        n_samples = n(),
+        mean_soc = mean(soc_g_kg, na.rm = TRUE),
+        sd_soc = sd(soc_g_kg, na.rm = TRUE),
+        se_soc = sd(soc_g_kg, na.rm = TRUE) / sqrt(n()),
+        mean_bd = mean(bulk_density_g_cm3, na.rm = TRUE),
+        .groups = "drop"
       )
-    }
-  }
 
-  if (length(statistical_tests) > 0) {
-    statistical_tests_df <- bind_rows(statistical_tests)
+    # Statistical tests (t-test) by stratum - HR vs Paired Composite only
+    statistical_tests <- list()
 
-    cat("\n========================================\n")
-    cat("HR vs COMPOSITE CORE COMPARISON\n")
-    cat("========================================\n\n")
+    for (s in unique(cores_complete$stratum)) {
+      hr_data <- cores_complete %>%
+        filter(stratum == s, core_type_clean == "HR") %>%
+        pull(soc_g_kg)
 
-    cat("Statistical Tests (Two-sample t-tests):\n\n")
+      comp_data <- cores_complete %>%
+        filter(stratum == s, core_type_clean == "Paired Composite") %>%
+        pull(soc_g_kg)
 
-    for (i in 1:nrow(statistical_tests_df)) {
-      cat(sprintf("%s:\n", statistical_tests_df$stratum[i]))
-      cat(sprintf("  HR mean SOC: %.1f g/kg\n", statistical_tests_df$hr_mean[i]))
-      cat(sprintf("  Composite mean SOC: %.1f g/kg\n", statistical_tests_df$comp_mean[i]))
-      cat(sprintf("  Difference: %.1f g/kg\n", statistical_tests_df$diff[i]))
-      cat(sprintf("  t-statistic: %.2f\n", statistical_tests_df$t_statistic[i]))
-      cat(sprintf("  p-value: %.4f %s\n",
-                  statistical_tests_df$p_value[i],
-                  ifelse(statistical_tests_df$significant[i], "**", "")))
-      cat(sprintf("  95%% CI: [%.1f, %.1f]\n",
-                  statistical_tests_df$ci_lower[i],
-                  statistical_tests_df$ci_upper[i]))
+      if (length(hr_data) >= 3 && length(comp_data) >= 3) {
+        test_result <- t.test(hr_data, comp_data)
 
-      if (statistical_tests_df$significant[i]) {
-        cat("  ✓ Significant difference detected (p < 0.05)\n")
-        cat("  ⚠ HR and Composite cores should be analyzed separately\n")
-      } else {
-        cat("  ✓ No significant difference (p ≥ 0.05)\n")
-        cat("  → Paired sampling assumption supported\n")
+        statistical_tests[[s]] <- data.frame(
+          stratum = s,
+          n_hr = length(hr_data),
+          n_paired_comp = length(comp_data),
+          hr_mean = mean(hr_data, na.rm = TRUE),
+          comp_mean = mean(comp_data, na.rm = TRUE),
+          diff = mean(hr_data, na.rm = TRUE) - mean(comp_data, na.rm = TRUE),
+          t_statistic = test_result$statistic,
+          p_value = test_result$p.value,
+          significant = test_result$p.value < 0.05,
+          ci_lower = test_result$conf.int[1],
+          ci_upper = test_result$conf.int[2]
+        )
       }
-      cat("\n")
     }
 
-    # Save core type comparison
-    write_csv(core_type_summary, "data_processed/core_type_summary.csv")
-    write_csv(statistical_tests_df, "data_processed/core_type_statistical_tests.csv")
-    log_message("Saved core type comparison reports")
+    if (length(statistical_tests) > 0) {
+      statistical_tests_df <- bind_rows(statistical_tests)
+
+      cat("\n========================================\n")
+      cat("HR vs PAIRED COMPOSITE CORE COMPARISON\n")
+      cat("========================================\n\n")
+
+      cat("Statistical Tests (Two-sample t-tests):\n")
+      cat("Purpose: Validate if paired composite cores can serve as proxy for HR cores\n\n")
+
+      for (i in 1:nrow(statistical_tests_df)) {
+        cat(sprintf("%s:\n", statistical_tests_df$stratum[i]))
+        cat(sprintf("  Sample sizes: %d HR, %d Paired Composite\n",
+                    statistical_tests_df$n_hr[i],
+                    statistical_tests_df$n_paired_comp[i]))
+        cat(sprintf("  HR mean SOC: %.1f g/kg\n", statistical_tests_df$hr_mean[i]))
+        cat(sprintf("  Paired Composite mean SOC: %.1f g/kg\n", statistical_tests_df$comp_mean[i]))
+        cat(sprintf("  Difference: %.1f g/kg\n", statistical_tests_df$diff[i]))
+        cat(sprintf("  t-statistic: %.2f\n", statistical_tests_df$t_statistic[i]))
+        cat(sprintf("  p-value: %.4f %s\n",
+                    statistical_tests_df$p_value[i],
+                    ifelse(statistical_tests_df$significant[i], "**", "")))
+        cat(sprintf("  95%% CI: [%.1f, %.1f]\n",
+                    statistical_tests_df$ci_lower[i],
+                    statistical_tests_df$ci_upper[i]))
+
+        if (statistical_tests_df$significant[i]) {
+          cat("  ✗ Significant difference detected (p < 0.05)\n")
+          cat("  → HR and Paired Composite cores differ significantly\n")
+          cat("  → Recommendation: Analyze HR and Composite separately OR collect more paired samples\n")
+        } else {
+          cat("  ✓ No significant difference (p ≥ 0.05)\n")
+          cat("  → Paired sampling assumption SUPPORTED\n")
+          cat("  → Recommendation: Composite cores can be used as proxy for HR cores in this stratum\n")
+        }
+        cat("\n")
+      }
+
+      # Overall recommendation
+      n_supported <- sum(!statistical_tests_df$significant)
+      n_total <- nrow(statistical_tests_df)
+
+      cat(sprintf("Overall: %d/%d strata support paired sampling approach\n\n", n_supported, n_total))
+
+      if (n_supported == n_total) {
+        cat("✓ EXCELLENT: All strata show paired composites can proxy for HR cores\n")
+        cat("  → Cost-effective approach validated for this site\n")
+      } else if (n_supported > 0) {
+        cat("⚠ MIXED: Some strata support paired approach, others don't\n")
+        cat("  → Consider stratum-specific strategies\n")
+      } else {
+        cat("✗ WARNING: No strata support paired approach\n")
+        cat("  → HR and composite cores should be analyzed separately\n")
+      }
+
+      # Save core type comparison
+      write_csv(core_type_summary, "data_processed/core_type_summary.csv")
+      write_csv(statistical_tests_df, "data_processed/core_type_statistical_tests.csv")
+      log_message("Saved core type comparison reports")
+
+    } else {
+      log_message("Insufficient data for HR vs Paired Composite statistical tests (need ≥3 each)", "WARNING")
+      cat("\n⚠ Statistical tests require ≥3 samples per core type per stratum\n")
+      cat("  Current data doesn't meet this threshold\n\n")
+    }
 
   } else {
-    log_message("Insufficient data for HR vs Composite statistical tests", "WARNING")
+    # Report what we have
+    if (!has_hr) {
+      log_message("No HR cores found in dataset", "WARNING")
+      cat("\n⚠ No HR cores detected in dataset\n")
+    }
+    if (!has_paired_comp) {
+      log_message("No Paired Composite cores found in dataset", "WARNING")
+      cat("\n⚠ No Paired Composite cores detected in dataset\n")
+    }
+    cat("  HR vs Paired Composite comparison requires both core types\n")
+    cat("  See data_raw/README_DATA_STRUCTURE.md for data requirements\n\n")
   }
 
 } else {
-  log_message("core_type not specified or insufficient data for comparison", "WARNING")
-  cat("\n⚠ Core type comparison skipped: core_type column not found or insufficient data\n\n")
+  log_message("core_type column not found in data", "WARNING")
+  cat("\n⚠ Core type comparison skipped: core_type column not found\n")
+  cat("  See data_raw/README_DATA_STRUCTURE.md for required data structure\n\n")
 }
 
 # ============================================================================
