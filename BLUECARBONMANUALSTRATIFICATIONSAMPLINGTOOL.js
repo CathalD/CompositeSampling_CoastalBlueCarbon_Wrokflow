@@ -876,9 +876,12 @@ generateSamplingButton.onClick(function() {
       CONFIG.RANDOM_SEED + stratumIndex + 1000
     );
 
-    var compositesList = composites.toList(params.compositesPerStratum);
+    // Get actual count (may be less than requested if stratum is small)
+    var actualCompositeCount = composites.size();
+    var compositesList = composites.toList(actualCompositeCount);
+
     var compositesWithProps = ee.FeatureCollection(
-      ee.List.sequence(0, params.compositesPerStratum - 1).map(function(idx) {
+      ee.List.sequence(0, actualCompositeCount.subtract(1)).map(function(idx) {
         var pt = ee.Feature(compositesList.get(idx));
         var composite = params.shape === 'Square' ?
           Utils.createSquare(pt, params.compositeArea) :
@@ -896,8 +899,8 @@ generateSamplingButton.onClick(function() {
 
     allComposites.push(compositesWithProps);
 
-    // Generate subsamples
-    compositesWithProps.toList(params.compositesPerStratum).evaluate(function(compList) {
+    // Generate subsamples (use actual count, not requested count)
+    compositesWithProps.toList(actualCompositeCount).evaluate(function(compList) {
       // Add null check to prevent forEach error
       if (!compList || compList.length === 0) {
         print('⚠️ Warning: No composites generated for stratum:', stratumName);
