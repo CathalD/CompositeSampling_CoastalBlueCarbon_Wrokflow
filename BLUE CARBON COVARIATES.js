@@ -628,13 +628,15 @@ if (CONFIG.includeSalinityProxies) {
   // FACTOR 3: Freshwater input proxy
   // Higher elevation areas and those far from drainage channels likely have less freshwater dilution
   // Lower elevation coastal areas with high water occurrence but low elevation = more marine influence
-  var freshwaterDilution = elevation.subtract(elevation.reduceRegion({
+  var minElevation = ee.Number(elevation.reduceRegion({
     reducer: ee.Reducer.min(),
     geometry: CONFIG.aoi,
     scale: 30,
     bestEffort: true,
     maxPixels: 1e9
-  }).values().get(0))
+  }).values().get(0));
+
+  var freshwaterDilution = elevation.subtract(minElevation)
     .divide(5)  // Normalize by typical coastal elevation range (5m)
     .clamp(0, 10);
 
