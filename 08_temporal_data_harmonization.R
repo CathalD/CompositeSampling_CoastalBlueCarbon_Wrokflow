@@ -67,91 +67,87 @@ dir.create("data_temporal", recursive = TRUE, showWarnings = FALSE)
 
 log_message("Scanning for available carbon stock datasets...")
 
-# Look for carbon_stocks_by_stratum.csv files in outputs/carbon_stocks/
+# Look for scenario subdirectories in outputs/carbon_stocks/
+# Structure: outputs/carbon_stocks/SCENARIO_YEAR/carbon_stocks_by_stratum_rf.csv
 carbon_stock_dir <- "outputs/carbon_stocks"
 
 if (!dir.exists(carbon_stock_dir)) {
-  stop(sprintf("Carbon stocks directory not found: %s\nPlease run Module 01-07 first to generate carbon stock outputs.",
+  stop(sprintf("Carbon stocks directory not found: %s\nPlease run Module 01-07 or Module 08A first to generate carbon stock outputs.",
                carbon_stock_dir))
 }
 
-# Find all carbon stock CSV files
-csv_files <- list.files(carbon_stock_dir,
-                        pattern = "carbon_stocks_by_stratum\\.csv$",
-                        full.names = TRUE,
-                        recursive = FALSE)
+# Find all subdirectories (scenario folders)
+scenario_dirs <- list.dirs(carbon_stock_dir, recursive = FALSE, full.names = TRUE)
+
+if (length(scenario_dirs) == 0) {
+  stop(sprintf("No scenario folders found in %s\nPlease run Module 01-07 or Module 08A to generate scenarios.",
+               carbon_stock_dir))
+}
+
+log_message(sprintf("Found %d scenario folder(s):", length(scenario_dirs)))
+
+# Find carbon_stocks_by_stratum_rf.csv in each folder
+csv_files <- c()
+for (dir in scenario_dirs) {
+  csv_file <- file.path(dir, "carbon_stocks_by_stratum_rf.csv")
+  if (file.exists(csv_file)) {
+    csv_files <- c(csv_files, csv_file)
+    log_message(sprintf("  - %s", basename(dir)))
+  }
+}
 
 if (length(csv_files) == 0) {
-  stop(sprintf("No carbon stock files found in %s\nPlease run Module 01-07 to generate carbon stocks.",
-               carbon_stock_dir))
+  stop(sprintf("No carbon_stocks_by_stratum_rf.csv files found in scenario folders.\nPlease check outputs/carbon_stocks/*/"))
 }
 
-log_message(sprintf("Found %d carbon stock dataset(s):", length(csv_files)))
-for (f in csv_files) {
-  log_message(sprintf("  - %s", basename(f)))
-}
+log_message(sprintf("Found %d carbon stock dataset(s) total", length(csv_files)))
 
 # ============================================================================
-# INTERACTIVE SCENARIO SPECIFICATION
+# EXTRACT SCENARIO AND YEAR FROM DIRECTORY NAMES
 # ============================================================================
 
 cat("\n========================================\n")
 cat("TEMPORAL DATASET CONFIGURATION\n")
 cat("========================================\n\n")
 
-cat("Please specify which scenarios/years to compare.\n")
-cat("You can either:\n")
-cat("  1. Use file naming convention (recommended)\n")
-cat("  2. Manually specify scenario labels\n\n")
+cat("Extracting scenario and year from folder names...\n")
+cat("Expected format: SCENARIO_YEAR (e.g., PROJECT_Y5_2024, BASELINE_2024)\n\n")
 
-# Check if files follow naming convention: carbon_stocks_by_stratum_SCENARIO_YEAR.csv
-has_naming_convention <- any(grepl("carbon_stocks_by_stratum_[A-Z]+_[0-9]{4}\\.csv$", csv_files))
-
-if (has_naming_convention) {
-  cat("Detected naming convention! Extracting scenario/year from filenames...\n\n")
-
-  # Extract scenario and year from filename
-  temporal_metadata <- data.frame(
-    file_path = csv_files,
-    file_name = basename(csv_files)
-  ) %>%
-    mutate(
-      # Extract scenario and year from filename pattern
-      scenario = str_extract(file_name, "(?<=_)[A-Z]+(?=_[0-9]{4})"),
-      year = as.integer(str_extract(file_name, "[0-9]{4}(?=\\.csv$)"))
-    )
-
-  # Handle files without convention
-  no_convention_idx <- is.na(temporal_metadata$scenario) | is.na(temporal_metadata$year)
-
-  if (any(no_convention_idx)) {
-    log_message("WARNING: Some files don't follow naming convention:", "WARNING")
-    for (i in which(no_convention_idx)) {
-      log_message(sprintf("  - %s", temporal_metadata$file_name[i]), "WARNING")
-    }
-    log_message("  These files will use default scenario/year from config", "WARNING")
-
-    # Use defaults from config for files without convention
-    temporal_metadata$scenario[no_convention_idx] <- PROJECT_SCENARIO
-    temporal_metadata$year[no_convention_idx] <- MONITORING_YEAR
-  }
-
-} else {
-  # Manual specification required
-  cat("No naming convention detected.\n")
-  cat("Using default scenario/year from config for all files.\n\n")
-
-  temporal_metadata <- data.frame(
-    file_path = csv_files,
-    file_name = basename(csv_files),
-    scenario = PROJECT_SCENARIO,
-    year = MONITORING_YEAR
+# Extract scenario and year from directory names
+temporal_metadata <- data.frame(
+  file_path = csv_files,
+  folder_name = basename(dirname(csv_files))
+) %>%
+  mutate(
+    # Try to extract scenario and year from folder name
+    # Pattern: SCENARIO_YEAR or SCENARIO (will use config year)
+    scenario = str_extract(folder_name, "^[A-Z_0-9]+(?=_[0-9]{4}$|$)"),
+    year = as.integer(str_extract(folder_name, "[0-9]{4}$"))
   )
+
+# Handle folders without year suffix
+no_year_idx <- is.na(temporal_metadata$year)
+if (any(no_year_idx)) {
+  log_message(sprintf("Using MONITORING_YEAR (%d) for folders without year suffix:", MONITORING_YEAR), "INFO")
+  for (i in which(no_year_idx)) {
+    log_message(sprintf("  - %s", temporal_metadata$folder_name[i]), "INFO")
+    temporal_metadata$year[i] <- MONITORING_YEAR
+  }
+}
+
+# Handle folders without clear scenario
+no_scenario_idx <- is.na(temporal_metadata$scenario)
+if (any(no_scenario_idx)) {
+  log_message(sprintf("Using PROJECT_SCENARIO (%s) for folders without clear scenario:", PROJECT_SCENARIO), "WARNING")
+  for (i in which(no_scenario_idx)) {
+    log_message(sprintf("  - %s", temporal_metadata$folder_name[i]), "WARNING")
+    temporal_metadata$scenario[i] <- PROJECT_SCENARIO
+  }
 }
 
 # Display detected scenarios
 cat("\nDetected scenarios and years:\n")
-print(temporal_metadata %>% select(file_name, scenario, year))
+print(temporal_metadata %>% select(folder_name, scenario, year))
 cat("\n")
 
 # Validate scenarios
@@ -259,88 +255,114 @@ if (nrow(all_combos) > 1) {
 # LOAD AND ALIGN RASTER DATA
 # ============================================================================
 
-log_message("\nLoading carbon stock rasters...")
+log_message("\nChecking for carbon stock rasters...")
 
-# Find all raster directories
-maps_dirs <- file.path(carbon_stock_dir, "maps")
+# For each scenario/year, check if rasters exist
+rasters_list <- list()
+any_rasters_found <- FALSE
 
-if (!dir.exists(maps_dirs)) {
-  log_message("WARNING: Maps directory not found - proceeding with CSV data only", "WARNING")
+for (i in 1:nrow(temporal_metadata)) {
+  scenario <- temporal_metadata$scenario[i]
+  year <- temporal_metadata$year[i]
+  dataset_id <- sprintf("%s_%d", scenario, year)
+  folder_name <- temporal_metadata$folder_name[i]
+
+  # Check for maps subdirectory in scenario folder
+  scenario_maps_dir <- file.path(carbon_stock_dir, folder_name, "maps")
+
+  if (!dir.exists(scenario_maps_dir)) {
+    log_message(sprintf("  No maps directory for: %s", dataset_id), "INFO")
+    rasters_list[[dataset_id]] <- list()
+    next
+  }
+
+  log_message(sprintf("  Loading rasters for: %s", dataset_id))
+  any_rasters_found <- TRUE
+
+  # Key rasters to load
+  raster_patterns <- c(
+    surface_mean = "carbon_stock_surface_mean\\.tif$",
+    deep_mean = "carbon_stock_deep_mean\\.tif$",
+    total_mean = "carbon_stock_total_mean\\.tif$",
+    surface_conservative = "carbon_stock_surface_conservative\\.tif$",
+    total_conservative = "carbon_stock_total_conservative\\.tif$"
+  )
+
+  dataset_rasters <- list()
+
+  for (raster_name in names(raster_patterns)) {
+    pattern <- raster_patterns[raster_name]
+    raster_file <- list.files(scenario_maps_dir, pattern = pattern, full.names = TRUE)
+
+    if (length(raster_file) > 0) {
+      r <- rast(raster_file[1])
+      dataset_rasters[[raster_name]] <- r
+      log_message(sprintf("    Loaded: %s", raster_name))
+    }
+  }
+
+  rasters_list[[dataset_id]] <- dataset_rasters
+}
+
+if (!any_rasters_found) {
+  log_message("No rasters found - proceeding with CSV data only", "WARNING")
   rasters_aligned <- NULL
 } else {
 
-  # For each scenario/year, load key rasters
-  rasters_list <- list()
-
-  for (i in 1:nrow(temporal_metadata)) {
-    scenario <- temporal_metadata$scenario[i]
-    year <- temporal_metadata$year[i]
-    dataset_id <- sprintf("%s_%d", scenario, year)
-
-    log_message(sprintf("  Loading rasters for: %s", dataset_id))
-
-    # Key rasters to load
-    raster_patterns <- c(
-      surface_mean = "carbon_stock_surface_mean\\.tif$",
-      deep_mean = "carbon_stock_deep_mean\\.tif$",
-      total_mean = "carbon_stock_total_mean\\.tif$",
-      surface_conservative = "carbon_stock_surface_conservative\\.tif$",
-      total_conservative = "carbon_stock_total_conservative\\.tif$"
-    )
-
-    dataset_rasters <- list()
-
-    for (raster_name in names(raster_patterns)) {
-      pattern <- raster_patterns[raster_name]
-      raster_file <- list.files(maps_dirs, pattern = pattern, full.names = TRUE)
-
-      if (length(raster_file) > 0) {
-        r <- rast(raster_file[1])
-        dataset_rasters[[raster_name]] <- r
-        log_message(sprintf("    Loaded: %s", raster_name))
-      } else {
-        log_message(sprintf("    Missing: %s", raster_name), "WARNING")
-      }
-    }
-
-    rasters_list[[dataset_id]] <- dataset_rasters
-  }
-
-  # Check spatial alignment
-  log_message("\nChecking spatial alignment...")
-
-  reference_raster <- rasters_list[[1]][[1]]
-  all_aligned <- TRUE
-
-  for (i in 2:length(rasters_list)) {
-    test_raster <- rasters_list[[i]][[1]]
-
-    if (!compareGeom(reference_raster, test_raster, stopOnError = FALSE)) {
-      log_message(sprintf("WARNING: Rasters for %s not aligned with reference",
-                         names(rasters_list)[i]), "WARNING")
-      all_aligned <- FALSE
+  # Find first non-empty raster list for reference
+  reference_raster <- NULL
+  for (dataset_id in names(rasters_list)) {
+    if (length(rasters_list[[dataset_id]]) > 0) {
+      reference_raster <- rasters_list[[dataset_id]][[1]]
+      log_message(sprintf("Using %s as spatial reference", dataset_id))
+      break
     }
   }
 
-  if (all_aligned) {
-    log_message("✓ All rasters are spatially aligned")
-    rasters_aligned <- rasters_list
+  if (is.null(reference_raster)) {
+    log_message("No valid rasters found for spatial alignment", "WARNING")
+    rasters_aligned <- NULL
   } else {
-    log_message("Resampling rasters to reference grid...", "WARNING")
+    # Check spatial alignment
+    log_message("Checking spatial alignment...")
+    all_aligned <- TRUE
 
-    # Resample all to reference
-    for (i in 2:length(rasters_list)) {
-      for (raster_name in names(rasters_list[[i]])) {
-        rasters_list[[i]][[raster_name]] <- resample(
-          rasters_list[[i]][[raster_name]],
-          reference_raster,
-          method = "bilinear"
-        )
+    for (dataset_id in names(rasters_list)) {
+      if (length(rasters_list[[dataset_id]]) > 0) {
+        test_raster <- rasters_list[[dataset_id]][[1]]
+
+        if (!compareGeom(reference_raster, test_raster, stopOnError = FALSE)) {
+          log_message(sprintf("WARNING: Rasters for %s not aligned with reference",
+                             dataset_id), "WARNING")
+          all_aligned <- FALSE
+        }
       }
     }
 
-    log_message("✓ Resampling complete")
-    rasters_aligned <- rasters_list
+    if (all_aligned) {
+      log_message("✓ All rasters are spatially aligned")
+      rasters_aligned <- rasters_list
+    } else {
+      log_message("Resampling rasters to reference grid...", "WARNING")
+
+      # Resample all to reference
+      for (dataset_id in names(rasters_list)) {
+        if (length(rasters_list[[dataset_id]]) > 0) {
+          for (raster_name in names(rasters_list[[dataset_id]])) {
+            if (!is.null(rasters_list[[dataset_id]][[raster_name]])) {
+              rasters_list[[dataset_id]][[raster_name]] <- resample(
+                rasters_list[[dataset_id]][[raster_name]],
+                reference_raster,
+                method = "bilinear"
+              )
+            }
+          }
+        }
+      }
+
+      log_message("✓ Resampling complete")
+      rasters_aligned <- rasters_list
+    }
   }
 }
 

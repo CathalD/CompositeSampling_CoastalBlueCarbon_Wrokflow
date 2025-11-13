@@ -93,7 +93,8 @@ for (i in 1:nrow(metadata)) {
 log_message("\nDetermining possible analyses...")
 
 has_baseline <- "BASELINE" %in% metadata$scenario
-has_project <- "PROJECT" %in% metadata$scenario
+project_scenarios <- metadata$scenario[grepl("^PROJECT", metadata$scenario)]
+has_project <- length(project_scenarios) > 0
 n_years <- length(unique(metadata$year))
 
 run_additionality <- has_baseline && has_project
@@ -109,6 +110,7 @@ cat("========================================\n\n")
 
 if (run_additionality) {
   cat("✓ Additionality Analysis (PROJECT - BASELINE)\n")
+  cat(sprintf("  PROJECT scenarios found: %s\n", paste(project_scenarios, collapse = ", ")))
 } else {
   cat("✗ Additionality Analysis (requires BASELINE and PROJECT)\n")
 }
@@ -128,7 +130,7 @@ if (run_additionality) {
 
   log_message("\n=== ADDITIONALITY ANALYSIS ===")
 
-  # Get baseline and project data
+  # Get baseline data
   baseline_data <- carbon_stocks %>%
     filter(scenario == "BASELINE") %>%
     group_by(stratum) %>%
@@ -142,9 +144,10 @@ if (run_additionality) {
       .groups = "drop"
     )
 
+  # Get project data (all scenarios starting with "PROJECT")
   project_data <- carbon_stocks %>%
-    filter(scenario == "PROJECT") %>%
-    group_by(stratum) %>%
+    filter(grepl("^PROJECT", scenario)) %>%
+    group_by(scenario, stratum) %>%
     summarise(
       project_year = first(year),
       project_surface_mean = mean(carbon_stock_surface_mean_Mg_ha, na.rm = TRUE),
@@ -155,9 +158,19 @@ if (run_additionality) {
       .groups = "drop"
     )
 
-  # Merge and calculate differences
-  additionality <- inner_join(baseline_data, project_data, by = "stratum") %>%
-    mutate(
+  # For each PROJECT scenario, calculate additionality
+  all_additionality <- list()
+
+  for (proj_scenario in unique(project_data$scenario)) {
+
+    log_message(sprintf("\nCalculating additionality for: %s vs BASELINE", proj_scenario))
+
+    proj_subset <- project_data %>% filter(scenario == proj_scenario)
+
+    # Merge and calculate differences
+    additionality <- inner_join(baseline_data, proj_subset, by = "stratum") %>%
+      mutate(
+        project_scenario = proj_scenario,
       # Calculate differences (PROJECT - BASELINE)
       delta_surface_mean = project_surface_mean - baseline_surface_mean,
       delta_deep_mean = project_deep_mean - baseline_deep_mean,
@@ -197,23 +210,27 @@ if (run_additionality) {
       pooled_se_surface = sqrt((baseline_surface_se^2 + project_surface_se^2) / 2),
       cohens_d_surface = delta_surface_mean / pooled_se_surface,
 
-      # Additionality assessment
-      additionality_status = case_when(
-        !significant_total ~ "Not Significant",
-        delta_total_conservative <= 0 ~ "No Net Gain (conservative)",
-        delta_total_conservative > 0 & delta_total_conservative < 5 ~ "Marginal (<5 Mg/ha)",
-        delta_total_conservative >= 5 & delta_total_conservative < 20 ~ "Moderate (5-20 Mg/ha)",
-        delta_total_conservative >= 20 ~ "Substantial (>20 Mg/ha)",
-        TRUE ~ "Unknown"
+        # Additionality assessment
+        additionality_status = case_when(
+          !significant_total ~ "Not Significant",
+          delta_total_conservative <= 0 ~ "No Net Gain (conservative)",
+          delta_total_conservative > 0 & delta_total_conservative < 5 ~ "Marginal (<5 Mg/ha)",
+          delta_total_conservative >= 5 & delta_total_conservative < 20 ~ "Moderate (5-20 Mg/ha)",
+          delta_total_conservative >= 20 ~ "Substantial (>20 Mg/ha)",
+          TRUE ~ "Unknown"
+        )
       )
-    )
 
-  cat("\n========================================\n")
-  cat("ADDITIONALITY BY STRATUM\n")
-  cat("========================================\n\n")
+    # Store results
+    all_additionality[[proj_scenario]] <- additionality
 
-  for (i in 1:nrow(additionality)) {
-    cat(sprintf("Stratum: %s\n", additionality$stratum[i]))
+    # Display results for this scenario
+    cat("\n========================================\n")
+    cat(sprintf("ADDITIONALITY: %s vs BASELINE\n", proj_scenario))
+    cat("========================================\n\n")
+
+    for (i in 1:nrow(additionality)) {
+      cat(sprintf("Stratum: %s\n", additionality$stratum[i]))
     cat(sprintf("  Baseline (0-100 cm): %.2f ± %.2f Mg C/ha\n",
                 additionality$baseline_total_mean[i],
                 additionality$baseline_total_se[i]))
@@ -229,33 +246,40 @@ if (run_additionality) {
                 additionality$delta_total_ci_upper[i]))
     cat(sprintf("  Conservative estimate: %.2f Mg C/ha\n",
                 additionality$delta_total_conservative[i]))
-    cat(sprintf("  Significance: %s (p = %.4f)\n",
-                ifelse(additionality$significant_total[i], "YES", "NO"),
-                additionality$p_value_total[i]))
-    cat(sprintf("  Status: %s\n", additionality$additionality_status[i]))
-    cat("\n")
-  }
+      cat(sprintf("  Significance: %s (p = %.4f)\n",
+                  ifelse(additionality$significant_total[i], "YES", "NO"),
+                  additionality$p_value_total[i]))
+      cat(sprintf("  Status: %s\n", additionality$additionality_status[i]))
+      cat("\n")
+    }
 
-  # Save additionality results
-  write_csv(additionality, "outputs/additionality/additionality_by_stratum.csv")
-  log_message("Saved: outputs/additionality/additionality_by_stratum.csv")
+    # Save additionality results for this scenario
+    output_file <- sprintf("outputs/additionality/additionality_%s_vs_BASELINE.csv", proj_scenario)
+    write_csv(additionality, output_file)
+    log_message(sprintf("Saved: %s", output_file))
 
-  # Calculate project-wide additionality (area-weighted if area data available)
-  project_wide <- additionality %>%
-    summarise(
-      n_strata = n(),
-      mean_delta_total = mean(delta_total_mean, na.rm = TRUE),
-      mean_delta_conservative = mean(delta_total_conservative, na.rm = TRUE),
-      total_significant = sum(significant_total, na.rm = TRUE)
-    )
+    # Calculate project-wide summary for this scenario
+    project_wide <- additionality %>%
+      summarise(
+        n_strata = n(),
+        mean_delta_total = mean(delta_total_mean, na.rm = TRUE),
+        mean_delta_conservative = mean(delta_total_conservative, na.rm = TRUE),
+        total_significant = sum(significant_total, na.rm = TRUE)
+      )
 
-  cat("========================================\n")
-  cat("PROJECT-WIDE SUMMARY\n")
-  cat("========================================\n\n")
-  cat(sprintf("Strata analyzed: %d\n", project_wide$n_strata))
-  cat(sprintf("Mean additionality: %.2f Mg C/ha\n", project_wide$mean_delta_total))
-  cat(sprintf("Conservative estimate: %.2f Mg C/ha\n", project_wide$mean_delta_conservative))
-  cat(sprintf("Significant strata: %d / %d\n\n", project_wide$total_significant, project_wide$n_strata))
+    cat("PROJECT-WIDE SUMMARY\n")
+    cat("----------------------------------------\n")
+    cat(sprintf("Strata analyzed: %d\n", project_wide$n_strata))
+    cat(sprintf("Mean additionality: %.2f Mg C/ha\n", project_wide$mean_delta_total))
+    cat(sprintf("Conservative estimate: %.2f Mg C/ha\n", project_wide$mean_delta_conservative))
+    cat(sprintf("Significant strata: %d / %d\n\n", project_wide$total_significant, project_wide$n_strata))
+
+  }  # End loop over PROJECT scenarios
+
+  # Combine all additionality results
+  all_additionality_combined <- bind_rows(all_additionality)
+  write_csv(all_additionality_combined, "outputs/additionality/additionality_all_scenarios.csv")
+  log_message("Saved: outputs/additionality/additionality_all_scenarios.csv")
 
   # ========================================================================
   # ADDITIONALITY RASTER MAPS

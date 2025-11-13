@@ -157,13 +157,37 @@ VM0033_ASSUMED_CV <- 30  # percent
 # TEMPORAL MONITORING & ADDITIONALITY PARAMETERS
 # ============================================================================
 
-# Valid scenario types for VM0033
-# - BASELINE: Pre-restoration or degraded condition (t0)
-# - PROJECT: Post-restoration or improved condition (t1, t2, ...)
-# - CONTROL: Unmanaged reference area (tracks natural variation)
-# - REFERENCE: Natural/pristine reference site (upper bound target)
-# - DEGRADED: Actively degrading area (lower bound baseline)
-VALID_SCENARIOS <- c("BASELINE", "PROJECT", "CONTROL", "REFERENCE", "DEGRADED")
+# Valid scenario types for VM0033 (expanded for restoration chronosequence)
+# Core scenarios:
+# - BASELINE: Pre-restoration or current degraded condition (t0)
+# - DEGRADED: Heavily degraded/lost ecosystem (lower bound)
+# - DISTURBED: Moderately impacted ecosystem
+# - REFERENCE: Natural healthy ecosystem (upper bound target)
+# - CONTROL: No-intervention control site (tracks natural variation)
+# Restoration trajectory scenarios:
+# - PROJECT_Y0: Immediately post-restoration
+# - PROJECT_Y1: 1 year post-restoration
+# - PROJECT_Y5: 5 years post-restoration (VM0033 first verification)
+# - PROJECT_Y10: 10 years post-restoration (VM0033 second verification)
+# - PROJECT_Y15: 15+ years post-restoration
+# - PROJECT: Generic project scenario (when year not specified)
+VALID_SCENARIOS <- c("BASELINE", "DEGRADED", "DISTURBED", "REFERENCE", "CONTROL",
+                     "PROJECT", "PROJECT_Y0", "PROJECT_Y1", "PROJECT_Y5",
+                     "PROJECT_Y10", "PROJECT_Y15", "CUSTOM")
+
+# Scenario hierarchy for modeling (relative carbon stock levels)
+# Used by Module 08A to model missing scenarios from available data
+SCENARIO_CARBON_LEVELS <- c(
+  DEGRADED = 1.0,
+  DISTURBED = 2.0,
+  BASELINE = 3.0,
+  PROJECT_Y0 = 3.0,
+  PROJECT_Y1 = 4.0,
+  PROJECT_Y5 = 6.0,
+  PROJECT_Y10 = 8.0,
+  PROJECT_Y15 = 9.5,
+  REFERENCE = 10.0
+)
 
 # Minimum monitoring frequency (years) - VM0033 typically requires verification every 5 years
 VM0033_MONITORING_FREQUENCY <- 5
@@ -179,6 +203,33 @@ ADDITIONALITY_METHOD <- "lower_bound"  # Options: "mean", "lower_bound", "conser
 # - "mean": Use mean difference between project and baseline
 # - "lower_bound": Use 95% CI lower bound of difference (most conservative, VM0033 recommended)
 # - "conservative": Use mean - 1SD (moderately conservative)
+
+# ============================================================================
+# SCENARIO MODELING PARAMETERS (Module 08A)
+# ============================================================================
+
+# Enable scenario modeling (generate synthetic scenarios from reference trajectories)
+SCENARIO_MODELING_ENABLED <- TRUE
+
+# Canadian literature database for BC Coast ecosystems
+CANADIAN_LITERATURE_DB <- "canadian_bluecarbon_parameters.csv"
+
+# Scenario modeling configuration file
+SCENARIO_CONFIG_FILE <- "scenario_modeling_config.csv"
+
+# Recovery model types for reference trajectory method
+# - "exponential": Fast initial recovery, slowing over time (most common)
+# - "linear": Constant accumulation rate
+# - "logistic": S-shaped curve with inflection point
+# - "asymptotic": Approaches target asymptotically
+RECOVERY_MODEL_TYPE <- "exponential"
+
+# Uncertainty inflation for modeled scenarios (%)
+# Adds additional uncertainty to account for modeling assumptions
+MODELING_UNCERTAINTY_BUFFER <- 10  # percent
+
+# Spatial resolution for modeled scenario rasters (if generating spatial outputs)
+MODELED_RASTER_RESOLUTION <- 30  # meters
 
 # ============================================================================
 # DEPTH HARMONIZATION PARAMETERS

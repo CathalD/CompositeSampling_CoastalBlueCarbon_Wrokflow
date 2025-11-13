@@ -4,10 +4,10 @@
 # PURPOSE: Aggregate carbon stocks from Modules 04/05, calculate conservative
 #          estimates, compare methods, and generate VM0033 compliance reports
 # INPUTS:
-#   - outputs/predictions/stocks/kriging/stock_*cm.tif (from Module 04)
-#   - outputs/predictions/stocks/kriging/stock_se_*cm.tif (from Module 04)
-#   - outputs/predictions/stocks/rf/stock_rf_*cm.tif (from Module 05)
-#   - outputs/predictions/stocks/rf/stock_rf_se_*cm.tif (from Module 05)
+#   - outputs/predictions/kriging/soc_*_*cm.tif (from Module 04)
+#   - outputs/predictions/kriging/soc_se_*_*cm.tif (from Module 04)
+#   - outputs/predictions/rf/soc_rf_*cm.tif (from Module 05)
+#   - outputs/predictions/rf/soc_rf_se_*cm.tif (from Module 05)
 #   - data_processed/stratum_raster.tif (from Module 05)
 # OUTPUTS:
 #   - outputs/carbon_stocks/carbon_stocks_by_stratum_kriging.csv
@@ -107,13 +107,13 @@ load_stock_rasters <- function(method) {
   uncertainties <- list()
 
   if (method == "kriging") {
-    stock_dir <- "outputs/predictions/stocks/kriging"
-    stock_pattern <- "stock_[0-9]+cm\\.tif"
-    se_pattern <- "stock_se_[0-9]+cm\\.tif"
+    stock_dir <- "outputs/predictions/kriging"
+    stock_pattern <- "soc_.*_[0-9]+cm\\.tif"
+    se_pattern <- "soc_se_.*_[0-9]+cm\\.tif"
   } else if (method == "rf") {
-    stock_dir <- "outputs/predictions/stocks/rf"
-    stock_pattern <- "stock_rf_[0-9]+cm\\.tif"
-    se_pattern <- "stock_rf_se_[0-9]+cm\\.tif"
+    stock_dir <- "outputs/predictions/rf"
+    stock_pattern <- "soc_rf_[0-9]+cm\\.tif"
+    se_pattern <- "soc_rf_se_[0-9]+cm\\.tif"
   } else {
     stop("method must be 'kriging' or 'rf'")
   }
@@ -132,11 +132,29 @@ load_stock_rasters <- function(method) {
 
   log_message(sprintf("Loading %d stock rasters for %s method", length(stock_files), method))
 
-  for (file in stock_files) {
-    # Extract depth from filename
-    depth <- as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(file)))
-    stocks[[as.character(depth)]] <- rast(file)
-    log_message(sprintf("  Loaded: stock at depth %.0f cm", depth))
+  # Group files by depth (handle multiple strata per depth)
+  depth_files <- data.frame(
+    file = stock_files,
+    depth = sapply(stock_files, function(f) {
+      as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+    })
+  )
+
+  for (d in unique(depth_files$depth)) {
+    files_at_depth <- depth_files$file[depth_files$depth == d]
+
+    if (length(files_at_depth) == 1) {
+      # Single file for this depth
+      stocks[[as.character(d)]] <- rast(files_at_depth)
+      log_message(sprintf("  Loaded: stock at depth %.0f cm", d))
+    } else {
+      # Multiple files (e.g., different strata) - mosaic them
+      log_message(sprintf("  Loading %d files for depth %.0f cm (mosaicking strata)",
+                         length(files_at_depth), d))
+      rasters <- lapply(files_at_depth, rast)
+      stocks[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
+      log_message(sprintf("  Mosaicked: stock at depth %.0f cm", d))
+    }
   }
 
   # Load uncertainty rasters
@@ -145,10 +163,29 @@ load_stock_rasters <- function(method) {
   if (length(se_files) > 0) {
     log_message(sprintf("Loading %d uncertainty rasters for %s method", length(se_files), method))
 
-    for (file in se_files) {
-      depth <- as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(file)))
-      uncertainties[[as.character(depth)]] <- rast(file)
-      log_message(sprintf("  Loaded: SE at depth %.0f cm", depth))
+    # Group SE files by depth
+    se_depth_files <- data.frame(
+      file = se_files,
+      depth = sapply(se_files, function(f) {
+        as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+      })
+    )
+
+    for (d in unique(se_depth_files$depth)) {
+      files_at_depth <- se_depth_files$file[se_depth_files$depth == d]
+
+      if (length(files_at_depth) == 1) {
+        # Single file for this depth
+        uncertainties[[as.character(d)]] <- rast(files_at_depth)
+        log_message(sprintf("  Loaded: SE at depth %.0f cm", d))
+      } else {
+        # Multiple files - mosaic them
+        log_message(sprintf("  Loading %d SE files for depth %.0f cm (mosaicking strata)",
+                           length(files_at_depth), d))
+        rasters <- lapply(files_at_depth, rast)
+        uncertainties[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
+        log_message(sprintf("  Mosaicked: SE at depth %.0f cm", d))
+      }
     }
   } else {
     log_message(sprintf("No uncertainty files found for %s method", method), "WARNING")
@@ -772,6 +809,79 @@ for (method in METHODS_AVAILABLE) {
     log_message(sprintf("  Overall: %.1f Mg C/ha (area: %.1f ha)", mean_total, area_ha))
     if (!is.na(conservative_total)) {
       log_message(sprintf("  Conservative: %.1f Mg C/ha", conservative_total))
+    }
+  }
+
+  # Add stratum-level VM0033 estimates if available
+  if (HAS_STRATUM_RASTER && !is.null(total_stock_data)) {
+
+    log_message("  Adding stratum-level VM0033 estimates...")
+
+    # Process each stratum
+    for (i in 1:nrow(stratum_levels)) {
+
+      stratum_id <- stratum_levels$ID[i]
+      stratum_name <- stratum_levels$stratum[i]
+
+      # Create mask for this stratum
+      stratum_mask <- stratum_raster == stratum_id
+
+      # Mask the total stock raster for this stratum
+      stratum_stock <- total_stock_data$mean * stratum_mask
+      stratum_se <- if (!is.null(total_stock_data$se)) {
+        total_stock_data$se * stratum_mask
+      } else {
+        NULL
+      }
+
+      # Extract values
+      stock_vals <- values(stratum_stock, mat = FALSE)
+      stock_vals <- stock_vals[!is.na(stock_vals) & stock_vals > 0]
+
+      if (length(stock_vals) == 0) {
+        log_message(sprintf("    Skipping %s (no valid pixels)", stratum_name), "WARNING")
+        next
+      }
+
+      # Calculate statistics
+      mean_stock <- mean(stock_vals, na.rm = TRUE)
+      n_pixels <- length(stock_vals)
+      pixel_area_ha <- prod(res(stratum_stock)) / 10000
+      area_ha <- n_pixels * pixel_area_ha
+      total_stock_Mg <- sum(stock_vals, na.rm = TRUE) * pixel_area_ha
+
+      # Conservative estimate
+      if (!is.null(stratum_se)) {
+        se_vals <- values(stratum_se, mat = FALSE)
+        se_vals <- se_vals[!is.na(se_vals) & se_vals > 0]
+
+        if (length(se_vals) > 0) {
+          mean_se <- mean(se_vals, na.rm = TRUE)
+          conservative_stock <- mean_stock - (qnorm((1 + CONFIDENCE_LEVEL) / 2) * mean_se)
+          conservative_stock <- max(conservative_stock, 0)
+          conservative_total_Mg <- conservative_stock * area_ha
+        } else {
+          conservative_stock <- NA
+          conservative_total_Mg <- NA
+        }
+      } else {
+        conservative_stock <- NA
+        conservative_total_Mg <- NA
+      }
+
+      # Add stratum row
+      vm0033_estimates <- rbind(vm0033_estimates, data.frame(
+        method = method,
+        stratum = stratum_name,
+        area_ha = area_ha,
+        mean_stock_0_100_Mg_ha = mean_stock,
+        conservative_stock_0_100_Mg_ha = conservative_stock,
+        total_stock_0_100_Mg = total_stock_Mg,
+        conservative_total_0_100_Mg = conservative_total_Mg
+      ))
+
+      log_message(sprintf("    %s: %.1f Mg C/ha (area: %.1f ha)",
+                         stratum_name, mean_stock, area_ha))
     }
   }
 
