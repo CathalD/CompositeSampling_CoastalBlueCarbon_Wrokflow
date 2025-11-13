@@ -125,73 +125,203 @@ log_message("Creating stratum raster covariate from GEE masks...")
 stratum_raster <- NULL
 gee_strata_dir <- "data_raw/gee_strata"
 
-if (dir.exists(gee_strata_dir)) {
+# Check if GEE strata directory exists
+if (!dir.exists(gee_strata_dir)) {
+  log_message(sprintf("GEE strata directory not found: %s", gee_strata_dir), "WARNING")
+  log_message("RF will proceed without stratum covariate", "WARNING")
+} else {
 
-  # Expected GEE export file patterns and their numeric codes
-  stratum_mapping <- data.frame(
-    stratum_name = c("Upper Marsh", "Mid Marsh", "Lower Marsh", "Underwater Vegetation", "Open Water"),
-    file_name = c("upper_marsh.tif", "mid_marsh.tif", "lower_marsh.tif", "underwater_vegetation.tif", "open_water.tif"),
-    stratum_code = 1:5
-  )
+  # ============================================================================
+  # OPTION 1: Check for CSV configuration first
+  # ============================================================================
 
-  stratum_layers <- list()
+  stratum_config_file <- "stratum_definitions.csv"
+  stratum_mapping <- NULL
+
+  if (file.exists(stratum_config_file)) {
+    log_message(sprintf("Found %s - using custom stratum configuration", stratum_config_file))
+
+    stratum_mapping <- read.csv(stratum_config_file, stringsAsFactors = FALSE)
+
+    # Validate required columns
+    required_cols <- c("stratum_name", "gee_file", "stratum_code")
+    missing_cols <- setdiff(required_cols, names(stratum_mapping))
+
+    if (length(missing_cols) > 0) {
+      stop(sprintf("stratum_definitions.csv missing required columns: %s\nRequired: %s",
+                  paste(missing_cols, collapse=", "),
+                  paste(required_cols, collapse=", ")))
+    }
+
+    # Optional columns (add with NA if missing)
+    optional_cols <- c("description", "restoration_type", "baseline_vs_project", "age_years")
+    for (col in optional_cols) {
+      if (!col %in% names(stratum_mapping)) {
+        stratum_mapping[[col]] <- NA
+      }
+    }
+
+    log_message(sprintf("Loaded %d strata from CSV configuration", nrow(stratum_mapping)))
+
+  } else {
+    # ============================================================================
+    # OPTION 2: Auto-detect from VALID_STRATA in config
+    # ============================================================================
+
+    log_message("No stratum_definitions.csv found - auto-detecting from blue_carbon_config.R")
+
+    if (!exists("VALID_STRATA") || length(VALID_STRATA) == 0) {
+      stop("No VALID_STRATA defined in blue_carbon_config.R and no stratum_definitions.csv found!\nPlease define strata in config or create stratum_definitions.csv")
+    }
+
+    # Auto-generate file names from stratum names
+    # Convention: "Upper Marsh" -> "upper_marsh.tif"
+    stratum_mapping <- data.frame(
+      stratum_name = VALID_STRATA,
+      gee_file = paste0(tolower(gsub(" ", "_", VALID_STRATA)), ".tif"),
+      stratum_code = 1:length(VALID_STRATA),
+      description = NA,
+      restoration_type = NA,
+      baseline_vs_project = NA,
+      age_years = NA,
+      stringsAsFactors = FALSE
+    )
+
+    log_message(sprintf("Auto-detected %d strata from VALID_STRATA", nrow(stratum_mapping)))
+  }
+
+  # ============================================================================
+  # VALIDATE THAT GEE FILES EXIST
+  # ============================================================================
+
+  log_message("\nValidating GEE export files...")
+
+  stratum_mapping$file_exists <- FALSE
+  stratum_mapping$file_path <- NA
 
   for (i in 1:nrow(stratum_mapping)) {
-    file_path <- file.path(gee_strata_dir, stratum_mapping$file_name[i])
+    file_path <- file.path(gee_strata_dir, stratum_mapping$gee_file[i])
 
     if (file.exists(file_path)) {
+      stratum_mapping$file_exists[i] <- TRUE
+      stratum_mapping$file_path[i] <- file_path
+      log_message(sprintf("  ✓ Found: %s (%s)",
+                         stratum_mapping$stratum_name[i],
+                         stratum_mapping$gee_file[i]))
+    } else {
+      log_message(sprintf("  ⚠ Missing: %s (expected: %s)",
+                         stratum_mapping$stratum_name[i],
+                         stratum_mapping$gee_file[i]), "WARNING")
+    }
+  }
+
+  # Filter to only strata with available files
+  available_strata <- stratum_mapping[stratum_mapping$file_exists, ]
+
+  if (nrow(available_strata) == 0) {
+    log_message(sprintf("No GEE stratum files found in %s!", gee_strata_dir), "WARNING")
+    log_message(sprintf("Expected files: %s",
+                       paste(stratum_mapping$gee_file, collapse=", ")), "WARNING")
+    log_message("RF will proceed without stratum covariate", "WARNING")
+  } else {
+
+    # Warn about missing strata but continue with available ones
+    if (nrow(available_strata) < nrow(stratum_mapping)) {
+      missing_strata <- stratum_mapping[!stratum_mapping$file_exists, ]
+      log_message(sprintf("\n⚠ WARNING: %d strata missing GEE files (will skip these):",
+                         nrow(missing_strata)), "WARNING")
+      for (i in 1:nrow(missing_strata)) {
+        log_message(sprintf("    - %s", missing_strata$stratum_name[i]), "WARNING")
+      }
+    }
+
+    log_message(sprintf("\nProceeding with %d available strata: %s",
+                       nrow(available_strata),
+                       paste(available_strata$stratum_name, collapse=", ")))
+
+    # ============================================================================
+    # LOAD STRATUM RASTERS
+    # ============================================================================
+
+    log_message("\nLoading stratum raster layers...")
+
+    stratum_layers <- list()
+
+    for (i in 1:nrow(available_strata)) {
+      stratum_name <- available_strata$stratum_name[i]
+      file_path <- available_strata$file_path[i]
+      stratum_code <- available_strata$stratum_code[i]
+
       mask_rast <- tryCatch({
+        log_message(sprintf("  Loading: %s", stratum_name))
+
         r <- rast(file_path)
+
+        # Ensure binary (0/1) or presence/absence
+        # GEE exports typically have 1 where stratum is present
+        r[r > 0] <- 1
+        r[is.na(r)] <- 0
 
         # Set to stratum code where mask = 1, NA elsewhere
         r[r == 0] <- NA
-        r[r == 1] <- stratum_mapping$stratum_code[i]
+        r[r == 1] <- stratum_code
 
         r
       }, error = function(e) {
-        log_message(sprintf("  Failed to load %s: %s",
-                           stratum_mapping$stratum_name[i], e$message), "WARNING")
+        log_message(sprintf("  Failed to load %s: %s", stratum_name, e$message), "WARNING")
         NULL
       })
 
       if (!is.null(mask_rast)) {
-        stratum_layers[[stratum_mapping$stratum_name[i]]] <- mask_rast
-        log_message(sprintf("  Loaded: %s (code %d)",
-                           stratum_mapping$stratum_name[i],
-                           stratum_mapping$stratum_code[i]))
+        stratum_layers[[as.character(stratum_code)]] <- mask_rast
       }
     }
-  }
 
-  if (length(stratum_layers) > 0) {
-    # Mosaic all stratum layers into single raster
-    # Where they overlap, last one wins (shouldn't overlap in practice)
-    stratum_raster <- do.call(mosaic, c(stratum_layers, list(fun = "max")))
+    log_message(sprintf("Successfully loaded %d stratum layers", length(stratum_layers)))
 
-    # Make categorical
+    # ============================================================================
+    # MOSAIC ALL STRATUM LAYERS INTO SINGLE CATEGORICAL RASTER
+    # ============================================================================
+
+    log_message("\nCreating unified stratum raster...")
+
+    if (length(stratum_layers) == 1) {
+      # Only one stratum - use directly
+      stratum_raster <- stratum_layers[[1]]
+
+    } else {
+      # Multiple strata - mosaic with max function
+      # Higher codes take precedence where overlap occurs
+      stratum_raster <- do.call(mosaic, c(stratum_layers, list(fun = "max")))
+    }
+
+    # Convert to categorical factor
     stratum_raster <- as.factor(stratum_raster)
 
-    # Set category labels
+    # Create labels data frame
     active_codes <- sort(unique(values(stratum_raster, na.rm = TRUE)))
     labels_df <- data.frame(
       value = active_codes,
-      label = stratum_mapping$stratum_name[match(active_codes, stratum_mapping$stratum_code)]
+      label = available_strata$stratum_name[match(active_codes, available_strata$stratum_code)]
     )
+
+    # Set levels
     levels(stratum_raster) <- labels_df
 
-    log_message(sprintf("Created stratum raster with %d categories", length(active_codes)))
+    log_message(sprintf("Created categorical stratum raster with %d levels:", nrow(labels_df)))
+    for (i in 1:nrow(labels_df)) {
+      log_message(sprintf("  %d: %s", labels_df$value[i], labels_df$label[i]))
+    }
 
-    # Save for later use
+    # Save stratum raster for use in Module 06
     dir.create("data_processed", recursive = TRUE, showWarnings = FALSE)
     writeRaster(stratum_raster, "data_processed/stratum_raster.tif", overwrite = TRUE)
-    log_message("Saved stratum raster to data_processed/stratum_raster.tif")
+    log_message("\nSaved unified stratum raster: data_processed/stratum_raster.tif")
 
-  } else {
-    log_message("No GEE stratum masks found - RF will not use stratum information", "WARNING")
+    # Save stratum mapping for reference
+    write.csv(available_strata, "data_processed/stratum_mapping_used.csv", row.names = FALSE)
+    log_message("Saved stratum mapping reference: data_processed/stratum_mapping_used.csv")
   }
-} else {
-  log_message(sprintf("GEE strata directory not found: %s", gee_strata_dir), "WARNING")
-  log_message("RF will proceed without stratum covariate", "WARNING")
 }
 
 # ============================================================================
@@ -642,7 +772,8 @@ for (depth in STANDARD_DEPTHS) {
   log_message("  Calculating spatial uncertainty (this may take a while)...")
 
   # Get all tree predictions for the raster
-  all_tree_pred_raster <- predict(covariate_stack, rf_model, predict.all = TRUE)$individual
+  # Note: With terra rasters, predict.all returns the raster directly (not a list with $individual)
+  all_tree_pred_raster <- predict(covariate_stack, rf_model, predict.all = TRUE, na.rm = TRUE)
 
   # Calculate variance raster
   rf_var_raster <- app(all_tree_pred_raster, var, na.rm = TRUE)
@@ -992,7 +1123,7 @@ if (nrow(cv_results_all) > 0) {
   cat("----------------------------------------\n")
   
   for (i in 1:nrow(cv_results_all)) {
-    cat(sprintf("Depth %d cm: RMSE=%.2f, R²=%.3f (n=%d)\n",
+    cat(sprintf("Depth %.1f cm: RMSE=%.2f, R²=%.3f (n=%d)\n",
                 cv_results_all$depth_cm[i],
                 cv_results_all$cv_rmse[i],
                 cv_results_all$cv_r2[i],

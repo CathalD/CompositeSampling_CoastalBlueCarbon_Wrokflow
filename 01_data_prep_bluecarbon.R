@@ -21,6 +21,15 @@ if (file.exists("blue_carbon_config.R")) {
   stop("Configuration file not found. Run 00_setup_bluecarbon.R first.")
 }
 
+# Verify required config variables are loaded
+required_vars <- c("VM0033_MIN_CORES", "CONFIDENCE_LEVEL", "VALID_STRATA",
+                   "INPUT_CRS", "PROCESSING_CRS", "BD_DEFAULTS")
+missing_vars <- required_vars[!sapply(required_vars, exists)]
+if (length(missing_vars) > 0) {
+  stop(sprintf("Configuration error: Missing required variables: %s\nPlease check blue_carbon_config.R",
+               paste(missing_vars, collapse=", ")))
+}
+
 # Initialize logging
 log_file <- file.path("logs", paste0("data_prep_", Sys.Date(), ".log"))
 if (!dir.exists("logs")) dir.create("logs")
@@ -162,6 +171,32 @@ if (!"scenario_type" %in% names(locations)) {
 if (!"monitoring_year" %in% names(locations)) {
   locations$monitoring_year <- MONITORING_YEAR
   log_message("Added monitoring_year from config")
+}
+
+# Validate scenario_type (optional validation if VALID_SCENARIOS exists)
+if ("scenario_type" %in% names(locations) && exists("VALID_SCENARIOS")) {
+  invalid_scenarios <- setdiff(unique(locations$scenario_type), VALID_SCENARIOS)
+
+  if (length(invalid_scenarios) > 0) {
+    log_message(sprintf("WARNING: Invalid scenario types found: %s",
+                       paste(invalid_scenarios, collapse = ", ")), "WARNING")
+    log_message(sprintf("  Valid options: %s", paste(VALID_SCENARIOS, collapse = ", ")), "WARNING")
+    log_message("  These will cause errors in temporal analysis modules (Module 08/09)", "WARNING")
+  }
+}
+
+# Validate monitoring_year
+if ("monitoring_year" %in% names(locations)) {
+  current_year <- as.integer(format(Sys.Date(), "%Y"))
+  invalid_years <- locations$monitoring_year[locations$monitoring_year > current_year |
+                                               locations$monitoring_year < 1900]
+
+  if (length(invalid_years) > 0) {
+    log_message("WARNING: Suspicious monitoring years detected", "WARNING")
+    log_message(sprintf("  Years outside reasonable range (1900-%d): %s",
+                       current_year,
+                       paste(unique(invalid_years), collapse = ", ")), "WARNING")
+  }
 }
 
 # Ensure core_type exists
