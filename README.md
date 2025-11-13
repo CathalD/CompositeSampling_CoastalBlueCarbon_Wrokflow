@@ -1,121 +1,252 @@
-[README_BLUE_CARBON_WORKFLOW.md](https://github.com/user-attachments/files/23505496/README_BLUE_CARBON_WORKFLOW.md)
-# 🌊 BLUE CARBON MMRV WORKFLOW
-## VM0033 & ORRAA Compliant Analysis Pipeline for Canadian Coastal Ecosystems
+# 🌊🌾 COMPOSITE SAMPLING CARBON MMRV WORKFLOWS
+## Multi-Ecosystem Analysis Pipeline for Canadian Carbon Projects
 
-**Version:** 1.0  
-**Last Updated:** November 2025  
-**Compliance:** VM0033, ORRAA High Quality Principles, IPCC Wetlands Supplement
+**Version:** 1.0
+**Last Updated:** November 2025
+**Ecosystems:** Coastal Blue Carbon & Prairie Grasslands
 
 ---
 
 ## 📋 OVERVIEW
 
-This workflow provides a complete analysis pipeline for blue carbon projects in Canadian coastal ecosystems (tidal marshes, seagrass beds, underwater vegetation). It implements VM0033 (Verra) methodology with conservative uncertainty estimation required for carbon credit verification.
+This repository provides **TWO complete analysis pipelines** for Canadian carbon assessment projects:
 
-### **Key Features:**
-✅ **Stratum-aware analysis** - Separate processing for 5 coastal ecosystem types  
-✅ **VM0033 compliant** - Conservative estimates (95% CI lower bound)  
-✅ **ORRAA principles** - Transparent, science-based MRV  
-✅ **Spatial modeling** - Random Forest + Kriging with AOA analysis  
-✅ **Uncertainty quantification** - Full error propagation  
-✅ **Verification ready** - Automated report generation  
+### 🌊 **COASTAL BLUE CARBON WORKFLOW**
+Complete analysis pipeline for blue carbon projects in Canadian coastal ecosystems (tidal marshes, seagrass beds, underwater vegetation). Implements VM0033 (Verra) methodology with conservative uncertainty estimation required for carbon credit verification.
+
+**→ See [README_BLUE_CARBON_WORKFLOW.md](README_BLUE_CARBON_WORKFLOW.md) for full documentation**
+
+### 🌾 **CANADIAN GRASSLAND CARBON WORKFLOW** ✨ NEW
+Complete analysis pipeline for **Canadian prairie and rangeland** carbon assessment. Implements AAFC Soil Carbon Protocols and Canadian Agricultural GHG Program methodology for grassland ecosystems.
+
+**→ See [README_GRASSLAND_WORKFLOW.md](README_GRASSLAND_WORKFLOW.md) for full documentation**
 
 ---
 
-## 🗂️ WORKFLOW MODULES
+## 🎯 QUICK START: WHICH WORKFLOW DO I NEED?
 
-### **Phase 1: Setup & Data Preparation**
+| **Use Coastal Blue Carbon if:** | **Use Grassland Carbon if:** |
+|----------------------------------|------------------------------|
+| Tidal wetlands, salt marshes | Prairie grasslands, rangelands |
+| Seagrass beds | Fescue prairie, mixed-grass prairie |
+| Mangroves (future) | Aspen parkland |
+| Coastal restoration projects | Grazing lands, improved pasture |
+| VM0033 verification needed | AAFC/Alberta Offset compliance needed |
+| 0-500 g/kg SOC range | 0-150 g/kg SOC range |
+| Anaerobic, high burial rates | Aerobic, root-driven accumulation |
 
-#### **Module 00: Setup** ✅ COMPLETE
-- **File:** `00b_setup_directories_bluecarbon.R`
-- **Purpose:** Install packages, create directories, configuration
-- **Runtime:** 5-10 minutes
-- **Outputs:** Directory structure, `blue_carbon_config.R`
+---
 
-#### **Module 01: Data Preparation**
-- **File:** `01_data_prep_bluecarbon.R` (adapt from generic version)
-- **Purpose:** Load and clean core data with stratum handling
-- **Key Features:**
-  - Validate 5 ecosystem strata
-  - VM0033 metadata (scenario, monitoring year)
-  - Stratum-specific bulk density defaults
-  - Enhanced QA/QC by stratum
-- **Outputs:** `cores_clean_bluecarbon.rds`
+## 📦 REPOSITORY STRUCTURE
 
-#### **Module 02: Exploratory Analysis**
-- **File:** `02_exploratory_analysis_bluecarbon.R` (adapt from generic)
-- **Purpose:** EDA with stratum stratification
-- **Key Features:**
-  - Depth profiles by stratum
-  - Cross-stratum comparisons
-  - Outlier detection by ecosystem type
-- **Outputs:** Diagnostic plots by stratum
+```
+CompositeSampling_CoastalBlueCarbon_Workflow/
+├── README.md                              # This file (overview of both workflows)
+├── README_BLUE_CARBON_WORKFLOW.md         # 🌊 Coastal blue carbon documentation
+├── README_GRASSLAND_WORKFLOW.md           # 🌾 Grassland carbon documentation (NEW)
+│
+├── Configuration Files:
+│   ├── blue_carbon_config.R               # 🌊 Coastal ecosystem parameters
+│   ├── grassland_carbon_config.R          # 🌾 Grassland ecosystem parameters (NEW)
+│
+├── Coastal Blue Carbon Modules (🌊):
+│   ├── 01_data_prep_bluecarbon.R
+│   ├── 02_exploratory_analysis_bluecarbon.R
+│   ├── 03_depth_harmonization_bluecarbon.R
+│   ├── 04_raster_predictions_kriging_bluecarbon.R
+│   ├── 05_raster_predictions_rf_bluecarbon.R
+│   ├── 06_carbon_stock_calculation_bluecarbon.R
+│   └── 07_mmrv_reporting_bluecarbon.R
+│
+├── Grassland Carbon Modules (🌾) - NEW:
+│   ├── 01_data_prep_grassland.R
+│   ├── 02_exploratory_analysis_grassland.R
+│   ├── 03_depth_harmonization_grassland.R
+│   ├── 04_raster_predictions_kriging_grassland.R
+│   ├── 05_raster_predictions_rf_grassland.R
+│   ├── 06_carbon_stock_calculation_grassland.R
+│   └── 07_mmrv_reporting_grassland.R
+│
+├── Shared Setup:
+│   ├── 00a_install_packages_v2.R
+│   └── 00b_setup_directories.R
+│
+└── Data Directories:
+    ├── data_raw/                          # Input field data
+    ├── data_processed/                    # Cleaned data
+    ├── covariates/                        # Remote sensing data
+    └── outputs/                           # Results, maps, reports
+```
 
-### **Phase 2: Depth Harmonization**
+---
 
-#### **Module 03: Spline Harmonization** ✅ COMPLETE
-- **File:** `03_depth_harmonization_bluecarbon.R`
-- **Purpose:** Standardize depth profiles to VM0033 intervals
-- **Key Features:**
-  - Stratum-specific spline parameters
-  - Bootstrap uncertainty (optional)
-  - Quality flags (realistic, monotonic)
-- **Outputs:** `cores_harmonized_spline_bluecarbon.rds`
+## 🌊 COASTAL BLUE CARBON WORKFLOW
 
-### **Phase 3: Spatial Prediction**
+This workflow provides a complete analysis pipeline for blue carbon projects in Canadian coastal ecosystems (tidal marshes, seagrass beds, underwater vegetation). It implements VM0033 (Verra) methodology with conservative uncertainty estimation required for carbon credit verification.
 
-#### **Module 04: Kriging** ✅ COMPLETE
-- **File:** `04_raster_predictions_kriging_bluecarbon.R`
-- **Purpose:** Spatial interpolation with stratum-specific variograms
-- **Key Features:**
-  - Separate variograms per stratum
-  - Anisotropic models for tidal gradients
-  - Cross-validation
-  - Uncertainty rasters (variance)
-- **Outputs:** 
-  - `outputs/predictions/kriging/soc_*cm.tif`
-  - `outputs/predictions/uncertainty/variance_*cm.tif`
+### **Key Features:**
+✅ **Stratum-aware analysis** - Separate processing for 5 coastal ecosystem types
+✅ **VM0033 compliant** - Conservative estimates (95% CI lower bound)
+✅ **ORRAA principles** - Transparent, science-based MRV
+✅ **Spatial modeling** - Random Forest + Kriging with AOA analysis
+✅ **Uncertainty quantification** - Full error propagation
+✅ **Verification ready** - Automated report generation
 
-#### **Module 05: Random Forest** ✅ COMPLETE  
-- **File:** `05_raster_predictions_rf_bluecarbon.R`
-- **Purpose:** Machine learning predictions with coastal covariates
-- **Key Features:**
-  - Stratum-aware training (spatial CV by stratum)
-  - Coastal-specific covariates (NDWI, SAR, tidal metrics)
-  - Area of Applicability (AOA) analysis
-  - Variable importance by stratum
-- **Outputs:**
-  - `outputs/predictions/rf/soc_rf_*cm.tif`
-  - `outputs/predictions/rf/aoa_*cm.tif`
-  - `outputs/models/rf/rf_models_all_depths.rds`
+**📘 Full Documentation:** [README_BLUE_CARBON_WORKFLOW.md](README_BLUE_CARBON_WORKFLOW.md)
 
-### **Phase 4: Carbon Stock Calculation & Verification**
+---
 
-#### **Module 06: Carbon Stock Calculation** ✅ COMPLETE
-- **File:** `06_carbon_stock_calculation_bluecarbon.R`
-- **Purpose:** Convert SOC predictions → Total carbon stocks
-- **Key Features:**
-  - VM0033 depth intervals (0-30 cm, 30-100 cm)
-  - Conservative estimates (95% CI lower bound)
-  - Stratum-specific calculations
-  - Uncertainty propagation
-- **Outputs:**
-  - `outputs/carbon_stocks/carbon_stocks_by_stratum.csv`
-  - `outputs/carbon_stocks/carbon_stocks_conservative_vm0033.csv`
-  - `outputs/carbon_stocks/maps/*.tif`
+## 🌾 CANADIAN GRASSLAND CARBON WORKFLOW ✨ NEW
 
-#### **Module 07: MMRV Reporting** ✅ COMPLETE
-- **File:** `07_mmrv_reporting_bluecarbon.R`
-- **Purpose:** Generate VM0033 verification package
-- **Key Features:**
-  - HTML verification report
-  - Excel summary tables (4 required tables)
-  - QA/QC flagged areas
-  - Spatial data exports for GIS verification
-- **Outputs:**
-  - `outputs/mmrv_reports/vm0033_verification_package.html`
-  - `outputs/mmrv_reports/vm0033_summary_tables.xlsx`
-  - `outputs/mmrv_reports/spatial_exports/` (GeoTIFFs)
+This workflow provides a complete analysis pipeline for **Canadian prairie and rangeland carbon projects** across grassland ecosystems. Implements AAFC Soil Carbon Protocols with conservative uncertainty estimation required for Canadian offset verification.
+
+### **Ecosystem Types:**
+- **Fescue Prairie** - Native fescue grasslands (AB/SK foothills)
+- **Mixed-Grass Prairie** - Native C3/C4 mix (southern prairies)
+- **Aspen Parkland** - Grassland-aspen mosaic (transition zone)
+- **Improved Pasture** - Seeded, managed, fertilized
+- **Degraded Grassland** - Overgrazed, invasive species
+
+### **Key Features:**
+✅ **Grassland-specific strata** - 5 Canadian prairie ecosystem types
+✅ **AAFC compliant** - Agriculture and Agri-Food Canada protocols
+✅ **Canadian protocols** - AGGHG Program, Alberta Offset System
+✅ **Grazing & fire history** - Management-specific carbon assessment
+✅ **Prairie-adapted depths** - Focus on 0-30 cm (highest SOC)
+✅ **Climate-driven modeling** - Precipitation-focused (semi-arid prairies)
+
+### **Key Differences from Coastal:**
+- **Depth focus:** 0-30 cm (most SOC) vs. 0-100 cm burial
+- **SOC range:** 0-150 g/kg (mineral soils) vs. 0-500 g/kg (organic)
+- **Bulk density:** 1.0-1.4 g/cm³ vs. 0.6-1.2 g/cm³
+- **Key covariates:** Precipitation, grazing, fire vs. tidal, NDWI, SAR
+- **Management:** Grazing intensity, fire frequency vs. tidal restoration
+- **Protocols:** AAFC, AGGHG vs. VM0033, ORRAA
+- **Verification:** Environment Canada, AB govt vs. Verra VCS
+
+**📗 Full Documentation:** [README_GRASSLAND_WORKFLOW.md](README_GRASSLAND_WORKFLOW.md)
+
+---
+
+## 🚀 GETTING STARTED
+
+### **1. Choose Your Workflow**
+- **Coastal/wetland projects:** Use blue carbon workflow
+- **Grassland/prairie projects:** Use grassland workflow
+
+### **2. Install Dependencies**
+```r
+# Set working directory
+setwd("/path/to/project")
+
+# Install required packages
+source("00a_install_packages_v2.R")
+
+# Setup directory structure
+source("00b_setup_directories.R")
+```
+
+### **3. Configure Your Project**
+
+**For Coastal Blue Carbon:**
+```r
+# Edit configuration
+file.edit("blue_carbon_config.R")
+
+# Run workflow
+source("01_data_prep_bluecarbon.R")
+source("02_exploratory_analysis_bluecarbon.R")
+source("03_depth_harmonization_bluecarbon.R")
+source("04_raster_predictions_kriging_bluecarbon.R")  # OR
+source("05_raster_predictions_rf_bluecarbon.R")
+source("06_carbon_stock_calculation_bluecarbon.R")
+source("07_mmrv_reporting_bluecarbon.R")
+```
+
+**For Canadian Grassland Carbon:**
+```r
+# Edit configuration
+file.edit("grassland_carbon_config.R")
+
+# Run workflow
+source("01_data_prep_grassland.R")
+source("02_exploratory_analysis_grassland.R")
+source("03_depth_harmonization_grassland.R")
+source("04_raster_predictions_kriging_grassland.R")  # OR
+source("05_raster_predictions_rf_grassland.R")
+source("06_carbon_stock_calculation_grassland.R")
+source("07_mmrv_reporting_grassland.R")
+```
+
+---
+
+## 📊 INPUT DATA REQUIREMENTS
+
+### **Both Workflows Require:**
+
+1. **Field core data** (`data_raw/`)
+   - `core_locations.csv` - GPS coordinates, stratum assignments
+   - `core_samples.csv` - Depth profiles, SOC, bulk density
+
+2. **Remote sensing covariates** (`covariates/`)
+   - Vegetation indices (NDVI, EVI)
+   - Climate data (precipitation, temperature)
+   - Topographic data (elevation, slope)
+   - Ecosystem-specific covariates
+
+3. **Stratum boundaries** (optional)
+   - Raster or vector format
+
+### **Grassland-Specific Additional Fields:**
+- `grazing_history` - Grazing intensity (None, Light, Moderate, Heavy, Severe)
+- `fire_history` - Years since last fire
+- `grass_type` - Native, Seeded, Mixed, Invasive
+- `ecoregion` - Canadian prairie ecoregion
+
+See ecosystem-specific READMEs for detailed data requirements.
+
+---
+
+## 📚 DOCUMENTATION
+
+| Document | Description |
+|----------|-------------|
+| **[README_BLUE_CARBON_WORKFLOW.md](README_BLUE_CARBON_WORKFLOW.md)** | 🌊 Complete coastal blue carbon documentation |
+| **[README_GRASSLAND_WORKFLOW.md](README_GRASSLAND_WORKFLOW.md)** | 🌾 Complete grassland carbon documentation |
+| **[data_raw/README_DATA_STRUCTURE.md](data_raw/README_DATA_STRUCTURE.md)** | Data format specifications |
+
+---
+
+## 🌟 KEY FEATURES (Both Workflows)
+
+### **Shared Capabilities:**
+- ✅ **7-module pipeline** - Data prep → MMRV reporting
+- ✅ **Spatial prediction** - Kriging and/or Random Forest
+- ✅ **Uncertainty quantification** - 95% CI, error propagation
+- ✅ **Cross-validation** - Spatial CV for model validation
+- ✅ **Area of Applicability** - Flag extrapolation zones
+- ✅ **Conservative estimates** - Lower bound for crediting
+- ✅ **Automated reporting** - HTML + Excel verification packages
+- ✅ **QA/QC framework** - Comprehensive quality checks
+
+### **Ecosystem-Specific:**
+- 🌊 **Blue Carbon:** VM0033 compliant, tidal/coastal focus, 0-100 cm
+- 🌾 **Grassland:** AAFC compliant, grazing/fire history, 0-30 cm focus
+
+---
+
+## 🗂️ WORKFLOW MODULES (SHARED STRUCTURE)
+
+**Module 00:** Setup & package installation
+**Module 01:** Data preparation & QA/QC
+**Module 02:** Exploratory analysis & visualization
+**Module 03:** Depth harmonization (splines)
+**Module 04:** Spatial prediction (Kriging)
+**Module 05:** Spatial prediction (Random Forest)
+**Module 06:** Carbon stock calculation
+**Module 07:** MMRV reporting & verification
+
+**See ecosystem-specific READMEs for detailed module documentation.**
 
 ---
 
@@ -444,20 +575,23 @@ RF_CELL_SIZE <- 30
 
 ## 📚 REFERENCES
 
-### **Primary Standards**
+### **🌊 Coastal Blue Carbon Standards**
 1. **VM0033** - Verra VCS Methodology for Tidal Wetland and Seagrass Restoration (2024)
 2. **ORRAA** - High Quality Blue Carbon Principles and Guidance (2024)
 3. **IPCC** - 2013 Supplement to 2006 Guidelines: Wetlands
+4. Canadian Blue Carbon Network - Provincial Standards
 
-### **Supporting Guidance**
-4. Restore America's Estuaries (2024) - Coastal Blue Carbon in Practice
-5. Blue Carbon Initiative - Practitioner's Guide (2024)
-6. Canadian Blue Carbon Network - Provincial Standards
+### **🌾 Canadian Grassland Carbon Standards**
+5. **AAFC** - Agriculture and Agri-Food Canada Soil Carbon Protocols (2024)
+6. **AGGHG** - Canadian Agricultural Greenhouse Gas Monitoring Program Methods
+7. **Alberta Offset System** - Conservation Cropping Protocol
+8. **NRCan** - Natural Resources Canada Grassland Carbon Guidance
+9. **IPCC 2006** - Grassland Chapter (Chapter 6)
 
-### **Key Papers**
-7. Harmonizing Blue Carbon Accounting Protocols (2023)
-8. New Technologies for Monitoring Coastal Ecosystems (2024)
-9. Flaws in Methodologies for Organic Carbon Analysis (2024)
+### **Supporting Guidance (Both Ecosystems)**
+10. **Verra VCS VM0026** - Sustainable Grassland Management (grassland)
+11. Blue Carbon Initiative - Practitioner's Guide (coastal)
+12. Restore America's Estuaries - Coastal Blue Carbon in Practice (coastal)
 
 ---
 
@@ -482,21 +616,27 @@ RF_CELL_SIZE <- 30
 
 ## 📄 LICENSE & CITATION
 
-**Workflow Version:** 1.0 (November 2025)  
-**Developed for:** Canadian Blue Carbon Projects  
-**Compliance:** VM0033, ORRAA, IPCC Wetlands Supplement
+**Workflow Version:** 1.0 (November 2025)
+**Developed for:** Canadian Carbon Projects (Coastal & Grassland)
+**Compliance:**
+- 🌊 Coastal: VM0033, ORRAA, IPCC Wetlands Supplement
+- 🌾 Grassland: AAFC, AGGHG Program, Alberta Offset System
 
 **Citation:**
 ```
-Blue Carbon MMRV Workflow v1.0 (2025). 
-VM0033-compliant analysis pipeline for Canadian coastal ecosystems.
+Composite Sampling Carbon MMRV Workflows v1.0 (2025).
+Multi-ecosystem analysis pipeline for Canadian coastal and grassland carbon projects.
+Includes:
+  - Blue Carbon: VM0033-compliant analysis for coastal ecosystems
+  - Grassland Carbon: AAFC-compliant analysis for prairie ecosystems
 ```
 
 ---
 
 ## 🎓 ACKNOWLEDGMENTS
 
-This workflow integrates best practices from:
+### **🌊 Coastal Blue Carbon Workflow:**
+Integrates best practices from:
 - Verra VM0033 methodology
 - ORRAA High Quality Blue Carbon Principles
 - IPCC Wetlands Supplement guidance
@@ -504,8 +644,19 @@ This workflow integrates best practices from:
 - Restore America's Estuaries
 - Blue Carbon Initiative
 
-Developed to support transparent, science-based blue carbon verification in Canada.
+### **🌾 Grassland Carbon Workflow:**
+Integrates best practices from:
+- Agriculture and Agri-Food Canada (AAFC)
+- Canadian Agricultural Greenhouse Gas Monitoring Program
+- Alberta Offset System
+- Natural Resources Canada (NRCan)
+- IPCC Grassland Chapter guidance
+- Verra VM0026 methodology
+
+**Developed to support transparent, science-based carbon verification in Canada across multiple ecosystems.**
 
 ---
 
-**🌊 Ready to quantify coastal carbon? Start with Module 00!**
+**🌊 Ready to quantify coastal carbon? See [README_BLUE_CARBON_WORKFLOW.md](README_BLUE_CARBON_WORKFLOW.md)**
+
+**🌾 Ready to quantify grassland carbon? See [README_GRASSLAND_WORKFLOW.md](README_GRASSLAND_WORKFLOW.md)**
