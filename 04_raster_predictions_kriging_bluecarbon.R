@@ -499,12 +499,12 @@ plot_variogram <- function(vgm_emp, vgm_model, stratum_name, depth_cm) {
   
   tryCatch({
     png(file.path("diagnostics/variograms", 
-                  sprintf("variogram_%s_%dcm.png", 
+                  sprintf("variogram_%s_%.0fcm.png", 
                           gsub(" ", "_", stratum_name), depth_cm)),
         width = 8, height = 6, units = "in", res = 300)
     
-    plot(vgm_emp, vgm_model, 
-         main = sprintf("Variogram: %s at %d cm", stratum_name, depth_cm),
+    plot(vgm_emp, vgm_model,
+         main = sprintf("Variogram: %s at %.1f cm", stratum_name, depth_cm),
          xlab = "Distance (m)",
          ylab = "Semivariance")
     
@@ -540,13 +540,13 @@ for (depth in STANDARD_DEPTHS) {
   cores_depth <- cores_standard %>%
     filter(depth_cm == depth)
   
-  log_message(sprintf("Samples at %d cm: %d from %d cores",
+  log_message(sprintf("Samples at %.1f cm: %d from %d cores",
                       depth, nrow(cores_depth), n_distinct(cores_depth$core_id)))
   
   # Process each stratum
   for (stratum_name in strata) {
     
-    log_message(sprintf("Processing: %s at %d cm", stratum_name, depth))
+    log_message(sprintf("Processing: %s at %.1f cm", stratum_name, depth))
     
     # Filter to this stratum
     cores_stratum <- cores_depth %>%
@@ -640,7 +640,7 @@ for (depth in STANDARD_DEPTHS) {
                    stratum_name, depth)
     
     # Store variogram model
-    model_key <- sprintf("%s_%dcm", gsub(" ", "_", stratum_name), depth)
+    model_key <- sprintf("%s_%.0fcm", gsub(" ", "_", stratum_name), depth)
     variogram_models[[model_key]] <- vgm_result$model
     
     # ========================================================================
@@ -886,31 +886,31 @@ for (depth in STANDARD_DEPTHS) {
 
     # Save prediction raster
     pred_file <- file.path("outputs/predictions/kriging",
-                          sprintf("soc_%s_%dcm.tif",
+                          sprintf("soc_%s_%.0fcm.tif",
                                   gsub(" ", "_", stratum_name), depth))
     writeRaster(pred_raster, pred_file, overwrite = TRUE)
 
     # Save kriging variance raster (kriging uncertainty only)
     var_kriging_file <- file.path("outputs/predictions/uncertainty",
-                                   sprintf("variance_kriging_%s_%dcm.tif",
+                                   sprintf("variance_kriging_%s_%.0fcm.tif",
                                            gsub(" ", "_", stratum_name), depth))
     writeRaster(var_raster, var_kriging_file, overwrite = TRUE)
 
     # Save combined variance raster (kriging + harmonization)
     var_combined_file <- file.path("outputs/predictions/uncertainty",
-                                    sprintf("variance_combined_%s_%dcm.tif",
+                                    sprintf("variance_combined_%s_%.0fcm.tif",
                                             gsub(" ", "_", stratum_name), depth))
     writeRaster(var_combined, var_combined_file, overwrite = TRUE)
 
     # Save kriging standard error
     se_kriging_file <- file.path("outputs/predictions/uncertainty",
-                                  sprintf("se_kriging_%s_%dcm.tif",
+                                  sprintf("se_kriging_%s_%.0fcm.tif",
                                           gsub(" ", "_", stratum_name), depth))
     writeRaster(se_kriging, se_kriging_file, overwrite = TRUE)
 
     # Save combined standard error (RECOMMENDED FOR VM0033)
     se_combined_file <- file.path("outputs/predictions/uncertainty",
-                                   sprintf("se_combined_%s_%dcm.tif",
+                                   sprintf("se_combined_%s_%.0fcm.tif",
                                            gsub(" ", "_", stratum_name), depth))
     writeRaster(se_combined, se_combined_file, overwrite = TRUE)
 
@@ -940,7 +940,7 @@ for (depth in STANDARD_DEPTHS) {
       if (!is.null(aoa_result)) {
         # Save AOA raster
         aoa_file <- file.path("outputs/predictions/aoa",
-                              sprintf("aoa_%s_%dcm.tif",
+                              sprintf("aoa_%s_%.0fcm.tif",
                                      gsub(" ", "_", stratum_name), depth))
         dir.create("outputs/predictions/aoa", recursive = TRUE, showWarnings = FALSE)
         writeRaster(aoa_result$aoa_raster, aoa_file, overwrite = TRUE)
@@ -954,7 +954,7 @@ for (depth in STANDARD_DEPTHS) {
     }
 
     # Store result
-    result_key <- sprintf("%s_%dcm", gsub(" ", "_", stratum_name), depth)
+    result_key <- sprintf("%s_%.0fcm", gsub(" ", "_", stratum_name), depth)
     kriging_results[[result_key]] <- list(
       stratum = stratum_name,
       depth_cm = depth,
