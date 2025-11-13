@@ -772,7 +772,7 @@ for (depth in STANDARD_DEPTHS) {
   log_message("  Calculating spatial uncertainty (this may take a while)...")
 
   # Get all tree predictions for the raster
-  all_tree_pred_raster <- predict(covariate_stack, rf_model, predict.all = TRUE)$individual
+  all_tree_pred_raster <- predict(covariate_stack, rf_model, predict.all = TRUE, na.rm = TRUE)$individual
 
   # Calculate variance raster
   rf_var_raster <- app(all_tree_pred_raster, var, na.rm = TRUE)
