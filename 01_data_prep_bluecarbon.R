@@ -23,7 +23,8 @@ if (file.exists("blue_carbon_config.R")) {
 
 # Verify required config variables are loaded
 required_vars <- c("VM0033_MIN_CORES", "CONFIDENCE_LEVEL", "VALID_STRATA",
-                   "INPUT_CRS", "PROCESSING_CRS", "BD_DEFAULTS")
+                   "INPUT_CRS", "PROCESSING_CRS", "BD_DEFAULTS",
+                   "VALID_SCENARIOS", "ADDITIONALITY_CONFIDENCE")
 missing_vars <- required_vars[!sapply(required_vars, exists)]
 if (length(missing_vars) > 0) {
   stop(sprintf("Configuration error: Missing required variables: %s\nPlease check blue_carbon_config.R",
@@ -171,6 +172,32 @@ if (!"scenario_type" %in% names(locations)) {
 if (!"monitoring_year" %in% names(locations)) {
   locations$monitoring_year <- MONITORING_YEAR
   log_message("Added monitoring_year from config")
+}
+
+# Validate scenario_type
+if ("scenario_type" %in% names(locations)) {
+  invalid_scenarios <- setdiff(unique(locations$scenario_type), VALID_SCENARIOS)
+
+  if (length(invalid_scenarios) > 0) {
+    log_message(sprintf("WARNING: Invalid scenario types found: %s",
+                       paste(invalid_scenarios, collapse = ", ")), "WARNING")
+    log_message(sprintf("  Valid options: %s", paste(VALID_SCENARIOS, collapse = ", ")), "WARNING")
+    log_message("  These will cause errors in temporal analysis modules", "WARNING")
+  }
+}
+
+# Validate monitoring_year
+if ("monitoring_year" %in% names(locations)) {
+  current_year <- as.integer(format(Sys.Date(), "%Y"))
+  invalid_years <- locations$monitoring_year[locations$monitoring_year > current_year |
+                                               locations$monitoring_year < 1900]
+
+  if (length(invalid_years) > 0) {
+    log_message("WARNING: Suspicious monitoring years detected", "WARNING")
+    log_message(sprintf("  Years outside reasonable range (1900-%d): %s",
+                       current_year,
+                       paste(unique(invalid_years), collapse = ", ")), "WARNING")
+  }
 }
 
 # Ensure core_type exists
@@ -456,6 +483,98 @@ if (n_compliant < n_total) {
 # Save VM0033 compliance report
 write_csv(vm0033_compliance, "data_processed/vm0033_compliance_report.csv")
 log_message("Saved VM0033 compliance report")
+
+# ============================================================================
+# TEMPORAL & ADDITIONALITY VALIDATION (VM0033)
+# ============================================================================
+
+log_message("Validating temporal monitoring structure...")
+
+# Summarize scenarios and monitoring years
+temporal_summary <- cores_clean %>%
+  group_by(scenario_type, monitoring_year) %>%
+  summarise(
+    n_cores = n_distinct(core_id),
+    n_strata = n_distinct(stratum),
+    strata_list = paste(unique(stratum), collapse = ", "),
+    .groups = "drop"
+  )
+
+cat("\n========================================\n")
+cat("TEMPORAL MONITORING COVERAGE\n")
+cat("========================================\n\n")
+
+print(as.data.frame(temporal_summary))
+
+# Check for baseline/project pairing
+scenarios_present <- unique(cores_clean$scenario_type)
+has_baseline <- "BASELINE" %in% scenarios_present
+has_project <- "PROJECT" %in% scenarios_present
+
+cat("\n")
+if (has_baseline && has_project) {
+  log_message("✓ Both BASELINE and PROJECT scenarios present - additionality analysis possible")
+
+  # Check stratum overlap between baseline and project
+  baseline_strata <- cores_clean %>%
+    filter(scenario_type == "BASELINE") %>%
+    pull(stratum) %>%
+    unique()
+
+  project_strata <- cores_clean %>%
+    filter(scenario_type == "PROJECT") %>%
+    pull(stratum) %>%
+    unique()
+
+  overlapping_strata <- intersect(baseline_strata, project_strata)
+
+  if (length(overlapping_strata) > 0) {
+    cat(sprintf("\n✓ %d strata available for baseline/project comparison:\n", length(overlapping_strata)))
+    for (s in overlapping_strata) {
+      cat(sprintf("  - %s\n", s))
+    }
+  } else {
+    log_message("WARNING: No overlapping strata between BASELINE and PROJECT", "WARNING")
+    log_message("  Additionality analysis will be limited", "WARNING")
+  }
+
+} else if (has_baseline) {
+  log_message("INFO: Only BASELINE scenario present - no additionality analysis possible yet")
+  log_message("  Collect PROJECT data to enable additionality assessment", "INFO")
+} else if (has_project) {
+  log_message("INFO: Only PROJECT scenario present - no additionality analysis possible yet")
+  log_message("  Collect BASELINE data to enable additionality assessment", "INFO")
+} else {
+  log_message("INFO: No BASELINE or PROJECT scenarios defined - using default scenario", "INFO")
+}
+
+# Check for multi-period monitoring
+monitoring_years <- sort(unique(cores_clean$monitoring_year))
+if (length(monitoring_years) > 1) {
+  cat(sprintf("\n✓ Multi-period monitoring detected: %s\n",
+              paste(monitoring_years, collapse = ", ")))
+
+  year_range <- max(monitoring_years) - min(monitoring_years)
+  cat(sprintf("  Time span: %d years\n", year_range))
+
+  if (year_range >= MIN_YEARS_FOR_CHANGE) {
+    log_message("  Temporal change analysis possible")
+  } else {
+    log_message(sprintf("  Time span < %d years - temporal trends may be uncertain",
+                       MIN_YEARS_FOR_CHANGE), "INFO")
+  }
+} else {
+  cat(sprintf("\nSingle monitoring period: %d\n", monitoring_years[1]))
+  log_message("  For temporal change analysis, collect data in additional years", "INFO")
+  log_message(sprintf("  VM0033 recommends verification every %d years",
+                     VM0033_MONITORING_FREQUENCY), "INFO")
+}
+
+cat("\n")
+
+# Save temporal summary
+write_csv(temporal_summary, "data_processed/temporal_coverage_summary.csv")
+log_message("Saved temporal coverage summary")
 
 # ============================================================================
 # BULK DENSITY HANDLING

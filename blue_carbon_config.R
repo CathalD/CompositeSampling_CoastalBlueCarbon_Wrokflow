@@ -154,6 +154,33 @@ VM0033_CV_THRESHOLD <- 30  # percent
 VM0033_ASSUMED_CV <- 30  # percent
 
 # ============================================================================
+# TEMPORAL MONITORING & ADDITIONALITY PARAMETERS
+# ============================================================================
+
+# Valid scenario types for VM0033
+# - BASELINE: Pre-restoration or degraded condition (t0)
+# - PROJECT: Post-restoration or improved condition (t1, t2, ...)
+# - CONTROL: Unmanaged reference area (tracks natural variation)
+# - REFERENCE: Natural/pristine reference site (upper bound target)
+# - DEGRADED: Actively degrading area (lower bound baseline)
+VALID_SCENARIOS <- c("BASELINE", "PROJECT", "CONTROL", "REFERENCE", "DEGRADED")
+
+# Minimum monitoring frequency (years) - VM0033 typically requires verification every 5 years
+VM0033_MONITORING_FREQUENCY <- 5
+
+# Minimum years for temporal change analysis
+MIN_YEARS_FOR_CHANGE <- 3  # At least 3 years to establish trend
+
+# Additionality test confidence level
+ADDITIONALITY_CONFIDENCE <- 0.95  # 95% CI for statistical tests
+
+# Conservative approach for additionality calculations
+ADDITIONALITY_METHOD <- "lower_bound"  # Options: "mean", "lower_bound", "conservative"
+# - "mean": Use mean difference between project and baseline
+# - "lower_bound": Use 95% CI lower bound of difference (most conservative, VM0033 recommended)
+# - "conservative": Use mean - 1SD (moderately conservative)
+
+# ============================================================================
 # DEPTH HARMONIZATION PARAMETERS
 # ============================================================================
 
