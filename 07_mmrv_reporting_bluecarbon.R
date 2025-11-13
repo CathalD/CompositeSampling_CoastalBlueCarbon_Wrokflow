@@ -581,15 +581,24 @@ if (length(di_maps) > 0) {
 
 log_message(sprintf("Total: %d spatial files for export", length(spatial_exports)))
 
-# Copy to export directory
-for (file in spatial_exports) {
-  file.copy(file, file.path("outputs/mmrv_reports/spatial_exports", basename(file)),
-            overwrite = TRUE)
+# Copy to export directory (only if files exist)
+if (length(spatial_exports) > 0) {
+  for (file in spatial_exports) {
+    file.copy(file, file.path("outputs/mmrv_reports/spatial_exports", basename(file)),
+              overwrite = TRUE)
+  }
+  log_message("Spatial files copied to export directory")
+} else {
+  log_message("No spatial files found for export", "WARNING")
 }
 
-log_message("Spatial files copied to export directory")
-
 # Create metadata file
+files_list <- if (length(spatial_exports) > 0) {
+  paste(basename(spatial_exports), collapse = "\n")
+} else {
+  "(No spatial files exported - check that Module 05/06 completed successfully)"
+}
+
 metadata_content <- paste0(
   "VM0033 Blue Carbon Verification Package\n",
   "========================================\n\n",
@@ -598,7 +607,7 @@ metadata_content <- paste0(
   "Coordinate System: EPSG:", INPUT_CRS, "\n\n",
   "Files Included:\n",
   "---------------\n",
-  paste(basename(spatial_exports), collapse = "\n"),
+  files_list,
   "\n\nCarbon Stock Rasters:\n",
   "- carbon_stock_*_mean.tif: Mean carbon stocks (Mg C/ha)\n",
   "- carbon_stock_*_se.tif: Standard error (Mg C/ha)\n",
