@@ -775,6 +775,79 @@ for (method in METHODS_AVAILABLE) {
     }
   }
 
+  # Add stratum-level VM0033 estimates if available
+  if (HAS_STRATUM_RASTER && !is.null(total_stock_data)) {
+
+    log_message("  Adding stratum-level VM0033 estimates...")
+
+    # Process each stratum
+    for (i in 1:nrow(stratum_levels)) {
+
+      stratum_id <- stratum_levels$ID[i]
+      stratum_name <- stratum_levels$stratum[i]
+
+      # Create mask for this stratum
+      stratum_mask <- stratum_raster == stratum_id
+
+      # Mask the total stock raster for this stratum
+      stratum_stock <- total_stock_data$mean * stratum_mask
+      stratum_se <- if (!is.null(total_stock_data$se)) {
+        total_stock_data$se * stratum_mask
+      } else {
+        NULL
+      }
+
+      # Extract values
+      stock_vals <- values(stratum_stock, mat = FALSE)
+      stock_vals <- stock_vals[!is.na(stock_vals) & stock_vals > 0]
+
+      if (length(stock_vals) == 0) {
+        log_message(sprintf("    Skipping %s (no valid pixels)", stratum_name), "WARNING")
+        next
+      }
+
+      # Calculate statistics
+      mean_stock <- mean(stock_vals, na.rm = TRUE)
+      n_pixels <- length(stock_vals)
+      pixel_area_ha <- prod(res(stratum_stock)) / 10000
+      area_ha <- n_pixels * pixel_area_ha
+      total_stock_Mg <- sum(stock_vals, na.rm = TRUE) * pixel_area_ha
+
+      # Conservative estimate
+      if (!is.null(stratum_se)) {
+        se_vals <- values(stratum_se, mat = FALSE)
+        se_vals <- se_vals[!is.na(se_vals) & se_vals > 0]
+
+        if (length(se_vals) > 0) {
+          mean_se <- mean(se_vals, na.rm = TRUE)
+          conservative_stock <- mean_stock - (qnorm((1 + CONFIDENCE_LEVEL) / 2) * mean_se)
+          conservative_stock <- max(conservative_stock, 0)
+          conservative_total_Mg <- conservative_stock * area_ha
+        } else {
+          conservative_stock <- NA
+          conservative_total_Mg <- NA
+        }
+      } else {
+        conservative_stock <- NA
+        conservative_total_Mg <- NA
+      }
+
+      # Add stratum row
+      vm0033_estimates <- rbind(vm0033_estimates, data.frame(
+        method = method,
+        stratum = stratum_name,
+        area_ha = area_ha,
+        mean_stock_0_100_Mg_ha = mean_stock,
+        conservative_stock_0_100_Mg_ha = conservative_stock,
+        total_stock_0_100_Mg = total_stock_Mg,
+        conservative_total_0_100_Mg = conservative_total_Mg
+      ))
+
+      log_message(sprintf("    %s: %.1f Mg C/ha (area: %.1f ha)",
+                         stratum_name, mean_stock, area_ha))
+    }
+  }
+
   # Save VM0033 estimates for this method
   write.csv(vm0033_estimates,
             sprintf("outputs/carbon_stocks/carbon_stocks_conservative_vm0033_%s.csv", method),
