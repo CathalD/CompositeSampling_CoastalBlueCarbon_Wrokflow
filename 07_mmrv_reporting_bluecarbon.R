@@ -4,11 +4,14 @@
 # PURPOSE: Generate verification-ready outputs for VM0033, ORRAA, and Canadian
 #          blue carbon standards including QA/QC documentation and spatial exports
 # INPUTS:
-#   - outputs/carbon_stocks/*.csv
-#   - outputs/predictions/rf/*.tif or kriging/*.tif
+#   - outputs/carbon_stocks/*_kriging.csv (from Module 06)
+#   - outputs/carbon_stocks/*_rf.csv (from Module 06)
+#   - outputs/carbon_stocks/carbon_stocks_method_comparison.csv (from Module 06)
+#   - outputs/predictions/stocks/kriging/*.tif (from Module 04)
+#   - outputs/predictions/stocks/rf/*.tif (from Module 05)
 #   - outputs/predictions/rf/aoa_*.tif (if available)
 #   - diagnostics/crossvalidation/*.csv
-#   - data_processed/cores_harmonized_spline_bluecarbon.rds
+#   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03)
 # OUTPUTS:
 #   - outputs/mmrv_reports/vm0033_verification_package.html
 #   - outputs/mmrv_reports/vm0033_summary_tables.xlsx
@@ -117,25 +120,58 @@ df_to_html_table <- function(df, digits = 2) {
 
 log_message("Loading analysis results...")
 
-# Carbon stocks
-carbon_stocks_by_stratum <- tryCatch({
-  read.csv("outputs/carbon_stocks/carbon_stocks_by_stratum.csv")
-}, error = function(e) {
-  log_message("Could not load stratum-level carbon stocks", "WARNING")
-  NULL
-})
+# Detect available methods
+METHODS_AVAILABLE <- c()
 
-carbon_stocks_overall <- tryCatch({
-  read.csv("outputs/carbon_stocks/carbon_stocks_overall.csv")
-}, error = function(e) {
-  log_message("Could not load overall carbon stocks", "WARNING")
-  NULL
-})
+# Check for kriging results
+if (file.exists("outputs/carbon_stocks/carbon_stocks_conservative_vm0033_kriging.csv")) {
+  METHODS_AVAILABLE <- c(METHODS_AVAILABLE, "kriging")
+}
 
-carbon_stocks_vm0033 <- tryCatch({
-  read.csv("outputs/carbon_stocks/carbon_stocks_conservative_vm0033.csv")
+# Check for RF results
+if (file.exists("outputs/carbon_stocks/carbon_stocks_conservative_vm0033_rf.csv")) {
+  METHODS_AVAILABLE <- c(METHODS_AVAILABLE, "rf")
+}
+
+log_message(sprintf("Methods available: %s", paste(METHODS_AVAILABLE, collapse=", ")))
+
+# Carbon stocks (multi-method)
+carbon_stocks_by_stratum <- data.frame()
+carbon_stocks_overall <- data.frame()
+carbon_stocks_vm0033 <- data.frame()
+
+for (method in METHODS_AVAILABLE) {
+
+  # Stratum-level
+  stratum_file <- sprintf("outputs/carbon_stocks/carbon_stocks_by_stratum_%s.csv", method)
+  if (file.exists(stratum_file)) {
+    stratum_data <- read.csv(stratum_file)
+    carbon_stocks_by_stratum <- rbind(carbon_stocks_by_stratum, stratum_data)
+    log_message(sprintf("  Loaded %s stratum stocks", method))
+  }
+
+  # Overall
+  overall_file <- sprintf("outputs/carbon_stocks/carbon_stocks_overall_%s.csv", method)
+  if (file.exists(overall_file)) {
+    overall_data <- read.csv(overall_file)
+    carbon_stocks_overall <- rbind(carbon_stocks_overall, overall_data)
+    log_message(sprintf("  Loaded %s overall stocks", method))
+  }
+
+  # VM0033 estimates
+  vm0033_file <- sprintf("outputs/carbon_stocks/carbon_stocks_conservative_vm0033_%s.csv", method)
+  if (file.exists(vm0033_file)) {
+    vm0033_data <- read.csv(vm0033_file)
+    carbon_stocks_vm0033 <- rbind(carbon_stocks_vm0033, vm0033_data)
+    log_message(sprintf("  Loaded %s VM0033 estimates", method))
+  }
+}
+
+# Method comparison
+method_comparison <- tryCatch({
+  read.csv("outputs/carbon_stocks/carbon_stocks_method_comparison.csv")
 }, error = function(e) {
-  log_message("Could not load VM0033 estimates", "WARNING")
+  log_message("Could not load method comparison (only one method available?)", "WARNING")
   NULL
 })
 
@@ -154,9 +190,9 @@ kriging_cv <- tryCatch({
   NULL
 })
 
-# Harmonized core data
+# Harmonized core data (updated path from Module 03)
 cores_harmonized <- tryCatch({
-  readRDS("data_processed/cores_harmonized_spline_bluecarbon.rds")
+  readRDS("data_processed/cores_harmonized_bluecarbon.rds")
 }, error = function(e) {
   log_message("Could not load harmonized core data", "WARNING")
   NULL
@@ -170,6 +206,32 @@ log_message("Results loaded")
 
 log_message("Creating Table 1: Project Overview...")
 
+# Calculate total area from VM0033 estimates
+total_area <- if (nrow(carbon_stocks_vm0033) > 0) {
+  # Get area from first "ALL" row (should be same across methods)
+  all_rows <- carbon_stocks_vm0033[carbon_stocks_vm0033$stratum == "ALL", ]
+  if (nrow(all_rows) > 0) {
+    sprintf("%.1f", all_rows$area_ha[1])
+  } else {
+    "N/A"
+  }
+} else {
+  "N/A"
+}
+
+# Determine which methods were used
+methods_used <- if (length(METHODS_AVAILABLE) > 0) {
+  method_names <- sapply(METHODS_AVAILABLE, function(m) {
+    switch(m,
+           "kriging" = "Kriging",
+           "rf" = "Random Forest (stratum-aware)",
+           m)
+  })
+  paste(method_names, collapse = " + ")
+} else {
+  "N/A"
+}
+
 table1_metadata <- data.frame(
   Parameter = c(
     "Project Name",
@@ -182,7 +244,7 @@ table1_metadata <- data.frame(
     "Number of Field Cores",
     "Number of Strata",
     "Standard Depths Analyzed",
-    "Prediction Model Used",
+    "Prediction Methods Used",
     "Confidence Level",
     "VM0033 Compliance"
   ),
@@ -193,16 +255,14 @@ table1_metadata <- data.frame(
     as.character(Sys.Date()),
     sprintf("EPSG:%d", PROCESSING_CRS),
     sprintf("EPSG:%d", INPUT_CRS),
-    ifelse(!is.null(carbon_stocks_vm0033), 
-           sprintf("%.1f", carbon_stocks_vm0033$area_ha[carbon_stocks_vm0033$stratum == "ALL"]), 
-           "N/A"),
-    ifelse(!is.null(cores_harmonized), 
-           n_distinct(cores_harmonized$core_id), 
+    total_area,
+    ifelse(!is.null(cores_harmonized),
+           n_distinct(cores_harmonized$core_id),
            "N/A"),
     length(VALID_STRATA),
     paste(STANDARD_DEPTHS, collapse = ", "),
-    "Random Forest (stratum-aware)",
-    paste0(CONFIDENCE_LEVEL * 100, "%"),
+    methods_used,
+    "95%",
     "YES - Conservative lower bound estimates"
   )
 )
@@ -298,24 +358,24 @@ log_message("Creating Table 4: QA/QC Summary...")
 table4_qaqc <- data.frame()
 
 if (!is.null(cores_harmonized)) {
-  
+
   qaqc_summary <- cores_harmonized %>%
     summarise(
-      `Total Spline Predictions` = n(),
+      `Total Harmonized Predictions` = n(),
       `QA Realistic (passed)` = sum(qa_realistic, na.rm = TRUE),
       `QA Realistic (%)` = round(100 * sum(qa_realistic, na.rm = TRUE) / n(), 1),
       `QA Monotonic (passed)` = sum(qa_monotonic, na.rm = TRUE),
       `QA Monotonic (%)` = round(100 * sum(qa_monotonic, na.rm = TRUE) / n(), 1),
-      `Mean SOC (g/kg)` = round(mean(soc_spline, na.rm = TRUE), 2),
-      `SD SOC (g/kg)` = round(sd(soc_spline, na.rm = TRUE), 2),
-      `Range SOC (g/kg)` = sprintf("%.1f - %.1f", 
-                                   min(soc_spline, na.rm = TRUE),
-                                   max(soc_spline, na.rm = TRUE))
+      `Mean SOC (g/kg)` = round(mean(soc_harmonized, na.rm = TRUE), 2),
+      `SD SOC (g/kg)` = round(sd(soc_harmonized, na.rm = TRUE), 2),
+      `Range SOC (g/kg)` = sprintf("%.1f - %.1f",
+                                   min(soc_harmonized, na.rm = TRUE),
+                                   max(soc_harmonized, na.rm = TRUE))
     ) %>%
     pivot_longer(everything(), names_to = "Metric", values_to = "Value")
-  
+
   table4_qaqc <- qaqc_summary
-  
+
 } else {
   table4_qaqc <- data.frame(
     Note = "QA/QC data not available"
@@ -323,6 +383,34 @@ if (!is.null(cores_harmonized)) {
 }
 
 log_message("Table 4 created")
+
+# ============================================================================
+# TABLE 5: METHOD COMPARISON (if both methods available)
+# ============================================================================
+
+table5_comparison <- data.frame()
+
+if (!is.null(method_comparison) && nrow(method_comparison) > 0) {
+
+  log_message("Creating Table 5: Method Comparison...")
+
+  table5_comparison <- method_comparison %>%
+    select(
+      `Depth Interval` = depth_interval,
+      `Kriging (Mg C/ha)` = mean_kriging_Mg_ha,
+      `RF (Mg C/ha)` = mean_rf_Mg_ha,
+      `Difference (Mg C/ha)` = mean_difference_Mg_ha,
+      `Difference (%)` = percent_difference,
+      `RMSD (Mg C/ha)` = rmsd_Mg_ha,
+      `Correlation` = correlation,
+      `Agreement (%)` = agreement_within_10_pct
+    )
+
+  log_message("Table 5 created")
+
+} else {
+  log_message("Table 5: Method comparison not available (single method only)", "INFO")
+}
 
 # ============================================================================
 # FLAG AREAS REQUIRING ATTENTION
@@ -418,27 +506,80 @@ if (nrow(flagged_areas) > 0) {
 log_message("Preparing spatial exports for verification...")
 
 # Create list of files to export
-spatial_exports <- list()
+spatial_exports <- c()
 
-# Carbon stock maps
-stock_maps <- list.files("outputs/carbon_stocks/maps", 
-                         pattern = "\\.tif$", 
+# Carbon stock maps from Module 06 (aggregated by method)
+stock_maps <- list.files("outputs/carbon_stocks/maps",
+                         pattern = "\\.tif$",
                          full.names = TRUE)
-spatial_exports <- c(spatial_exports, stock_maps)
+if (length(stock_maps) > 0) {
+  spatial_exports <- c(spatial_exports, stock_maps)
+  log_message(sprintf("  Found %d stock maps from Module 06", length(stock_maps)))
+}
 
-# Prediction maps
-pred_maps <- list.files("outputs/predictions/rf", 
-                        pattern = "soc_rf_.*\\.tif$", 
-                        full.names = TRUE)
-spatial_exports <- c(spatial_exports, pred_maps)
+# Stock rasters from Module 04 (kriging)
+if ("kriging" %in% METHODS_AVAILABLE) {
+  kriging_stocks <- list.files("outputs/predictions/stocks/kriging",
+                               pattern = "stock_.*\\.tif$",
+                               full.names = TRUE)
+  if (length(kriging_stocks) > 0) {
+    spatial_exports <- c(spatial_exports, kriging_stocks)
+    log_message(sprintf("  Found %d kriging stock rasters", length(kriging_stocks)))
+  }
+}
 
-# AOA maps
-aoa_maps <- list.files("outputs/predictions/rf", 
-                       pattern = "aoa_.*\\.tif$", 
+# Stock rasters from Module 05 (RF)
+if ("rf" %in% METHODS_AVAILABLE) {
+  rf_stocks <- list.files("outputs/predictions/stocks/rf",
+                          pattern = "stock_rf_.*\\.tif$",
+                          full.names = TRUE)
+  if (length(rf_stocks) > 0) {
+    spatial_exports <- c(spatial_exports, rf_stocks)
+    log_message(sprintf("  Found %d RF stock rasters", length(rf_stocks)))
+  }
+}
+
+# SOC prediction maps (RF)
+if ("rf" %in% METHODS_AVAILABLE) {
+  rf_soc_maps <- list.files("outputs/predictions/rf",
+                            pattern = "soc_rf_.*cm\\.tif$",
+                            full.names = TRUE)
+  if (length(rf_soc_maps) > 0) {
+    spatial_exports <- c(spatial_exports, rf_soc_maps)
+    log_message(sprintf("  Found %d RF SOC predictions", length(rf_soc_maps)))
+  }
+}
+
+# SOC prediction maps (kriging)
+if ("kriging" %in% METHODS_AVAILABLE) {
+  kriging_soc_maps <- list.files("outputs/predictions/kriging",
+                                 pattern = "soc_[0-9]+cm\\.tif$",
+                                 full.names = TRUE)
+  if (length(kriging_soc_maps) > 0) {
+    spatial_exports <- c(spatial_exports, kriging_soc_maps)
+    log_message(sprintf("  Found %d kriging SOC predictions", length(kriging_soc_maps)))
+  }
+}
+
+# AOA maps (if available from RF)
+aoa_maps <- list.files("outputs/predictions/rf",
+                       pattern = "aoa_.*\\.tif$",
                        full.names = TRUE)
-spatial_exports <- c(spatial_exports, aoa_maps)
+if (length(aoa_maps) > 0) {
+  spatial_exports <- c(spatial_exports, aoa_maps)
+  log_message(sprintf("  Found %d AOA maps", length(aoa_maps)))
+}
 
-log_message(sprintf("Identified %d spatial files for export", length(spatial_exports)))
+# DI maps (if available from RF)
+di_maps <- list.files("outputs/predictions/rf",
+                      pattern = "di_.*\\.tif$",
+                      full.names = TRUE)
+if (length(di_maps) > 0) {
+  spatial_exports <- c(spatial_exports, di_maps)
+  log_message(sprintf("  Found %d Dissimilarity Index maps", length(di_maps)))
+}
+
+log_message(sprintf("Total: %d spatial files for export", length(spatial_exports)))
 
 # Copy to export directory
 for (file in spatial_exports) {
@@ -481,43 +622,56 @@ log_message("Created spatial export README")
 
 if (has_openxlsx) {
   log_message("Creating Excel verification tables...")
-  
+
   wb <- openxlsx::createWorkbook()
-  
+
   # Add sheets
   openxlsx::addWorksheet(wb, "1_Project_Metadata")
   openxlsx::writeData(wb, "1_Project_Metadata", table1_metadata)
-  
+
   openxlsx::addWorksheet(wb, "2_Carbon_Stocks")
   openxlsx::writeData(wb, "2_Carbon_Stocks", table2_stocks)
-  
+
   openxlsx::addWorksheet(wb, "3_Model_Performance")
   openxlsx::writeData(wb, "3_Model_Performance", table3_performance)
-  
+
   openxlsx::addWorksheet(wb, "4_QAQC_Summary")
   openxlsx::writeData(wb, "4_QAQC_Summary", table4_qaqc)
-  
-  if (nrow(flagged_areas) > 0) {
-    openxlsx::addWorksheet(wb, "5_Flagged_Areas")
-    openxlsx::writeData(wb, "5_Flagged_Areas", flagged_areas)
+
+  # Add method comparison if available
+  if (nrow(table5_comparison) > 0) {
+    openxlsx::addWorksheet(wb, "5_Method_Comparison")
+    openxlsx::writeData(wb, "5_Method_Comparison", table5_comparison)
   }
-  
+
+  # Add flagged areas
+  if (nrow(flagged_areas) > 0) {
+    sheet_num <- if (nrow(table5_comparison) > 0) 6 else 5
+    openxlsx::addWorksheet(wb, sprintf("%d_Flagged_Areas", sheet_num))
+    openxlsx::writeData(wb, sprintf("%d_Flagged_Areas", sheet_num), flagged_areas)
+  }
+
   # Save
   openxlsx::saveWorkbook(wb, "outputs/mmrv_reports/vm0033_summary_tables.xlsx",
                          overwrite = TRUE)
-  
+
   log_message("Excel tables saved")
 } else {
   log_message("Saving tables as CSV (Excel not available)...")
-  
-  write.csv(table1_metadata, "outputs/mmrv_reports/1_project_metadata.csv", 
+
+  write.csv(table1_metadata, "outputs/mmrv_reports/1_project_metadata.csv",
             row.names = FALSE)
-  write.csv(table2_stocks, "outputs/mmrv_reports/2_carbon_stocks.csv", 
+  write.csv(table2_stocks, "outputs/mmrv_reports/2_carbon_stocks.csv",
             row.names = FALSE)
-  write.csv(table3_performance, "outputs/mmrv_reports/3_model_performance.csv", 
+  write.csv(table3_performance, "outputs/mmrv_reports/3_model_performance.csv",
             row.names = FALSE)
-  write.csv(table4_qaqc, "outputs/mmrv_reports/4_qaqc_summary.csv", 
+  write.csv(table4_qaqc, "outputs/mmrv_reports/4_qaqc_summary.csv",
             row.names = FALSE)
+
+  if (nrow(table5_comparison) > 0) {
+    write.csv(table5_comparison, "outputs/mmrv_reports/5_method_comparison.csv",
+              row.names = FALSE)
+  }
 }
 
 # ============================================================================
@@ -571,6 +725,8 @@ This package includes conservative estimates (lower 95%% confidence bound) as re
 
 %s
 
+%s
+
 <h2>Verification Checklist</h2>
 <ul>
 <li>✓ Field sampling conducted following VM0033 protocols</li>
@@ -610,6 +766,10 @@ This package includes conservative estimates (lower 95%% confidence bound) as re
   df_to_html_table(table2_stocks, digits = 2),
   df_to_html_table(table3_performance, digits = 2),
   df_to_html_table(table4_qaqc, digits = 1),
+  ifelse(nrow(table5_comparison) > 0,
+         sprintf("<h2>Table 5: Prediction Method Comparison</h2>%s<p><em>Comparison of Kriging vs Random Forest carbon stock estimates by depth interval. High correlation (>0.8) indicates good agreement between methods.</em></p>",
+                 df_to_html_table(table5_comparison, digits = 2)),
+         ""),
   ifelse(nrow(flagged_areas) > 0,
          sprintf("<h2>Areas Flagged for Attention</h2>%s<p><em>See qaqc_flagged_areas.csv for details</em></p>",
                  df_to_html_table(flagged_areas, digits = 1)),
@@ -631,14 +791,35 @@ cat("========================================\n\n")
 
 cat("MMRV Verification Package Summary:\n")
 cat("----------------------------------------\n")
+cat(sprintf("Prediction methods: %s\n", paste(METHODS_AVAILABLE, collapse=", ")))
 
-if (!is.null(carbon_stocks_vm0033)) {
-  cat(sprintf("\nTotal Project Area: %.1f ha\n", 
-              carbon_stocks_vm0033$area_ha[carbon_stocks_vm0033$stratum == "ALL"]))
-  cat(sprintf("Total Carbon Stock (0-100 cm): %.0f Mg C\n",
-              carbon_stocks_vm0033$total_stock_0_100_Mg[carbon_stocks_vm0033$stratum == "ALL"]))
-  cat(sprintf("Conservative Estimate: %.0f Mg C (VM0033 compliant)\n",
-              carbon_stocks_vm0033$conservative_total_0_100_Mg[carbon_stocks_vm0033$stratum == "ALL"]))
+if (nrow(carbon_stocks_vm0033) > 0) {
+  # Get "ALL" rows for each method
+  all_rows <- carbon_stocks_vm0033[carbon_stocks_vm0033$stratum == "ALL", ]
+
+  if (nrow(all_rows) > 0) {
+    cat(sprintf("\nTotal Project Area: %.1f ha\n", all_rows$area_ha[1]))
+
+    # Show results for each method
+    for (i in 1:nrow(all_rows)) {
+      method <- all_rows$method[i]
+      cat(sprintf("\n%s Method:\n", toupper(method)))
+      cat(sprintf("  Total Carbon Stock (0-100 cm): %.0f Mg C\n",
+                  all_rows$total_stock_0_100_Mg[i]))
+
+      if (!is.na(all_rows$conservative_total_0_100_Mg[i])) {
+        cat(sprintf("  Conservative Estimate: %.0f Mg C (VM0033 compliant)\n",
+                    all_rows$conservative_total_0_100_Mg[i]))
+      }
+    }
+
+    # If both methods available, show comparison
+    if (nrow(all_rows) == 2) {
+      diff_pct <- abs(all_rows$total_stock_0_100_Mg[1] - all_rows$total_stock_0_100_Mg[2]) /
+                  mean(all_rows$total_stock_0_100_Mg) * 100
+      cat(sprintf("\nMethod agreement: %.1f%% difference\n", diff_pct))
+    }
+  }
 }
 
 cat("\nVerification Package Contents:\n")
@@ -666,6 +847,10 @@ cat("  ✓ Cross-validation performed\n")
 cat("  ✓ QA/QC documentation\n")
 cat("  ✓ Spatial data for verification\n")
 cat("  ✓ Verification-ready HTML report\n")
+
+if (length(METHODS_AVAILABLE) > 1) {
+  cat("  ✓ Multiple prediction methods compared\n")
+}
 
 cat("\nRecommended Standards Compliance:\n")
 cat("----------------------------------------\n")
