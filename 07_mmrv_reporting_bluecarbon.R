@@ -372,7 +372,8 @@ if (!is.null(cores_harmonized)) {
                                    min(soc_harmonized, na.rm = TRUE),
                                    max(soc_harmonized, na.rm = TRUE))
     ) %>%
-    pivot_longer(everything(), names_to = "Metric", values_to = "Value")
+    pivot_longer(everything(), names_to = "Metric", values_to = "Value",
+                 values_transform = list(Value = as.character))
 
   table4_qaqc <- qaqc_summary
 
