@@ -10,112 +10,159 @@
 
 ## 📋 OVERVIEW
 
-This workflow provides a complete analysis pipeline for blue carbon projects in Canadian coastal ecosystems (tidal marshes, seagrass beds, underwater vegetation). It implements VM0033 (Verra) methodology with conservative uncertainty estimation required for carbon credit verification.
+This workflow provides a complete 3-part analysis pipeline for blue carbon projects in Canadian coastal ecosystems (tidal marshes, seagrass beds, underwater vegetation). It implements VM0033 (Verra) methodology with conservative uncertainty estimation required for carbon credit verification and additionality assessment.
 
 ### **Key Features:**
-✅ **Stratum-aware analysis** - Separate processing for 5 coastal ecosystem types  
-✅ **VM0033 compliant** - Conservative estimates (95% CI lower bound)  
-✅ **ORRAA principles** - Transparent, science-based MRV  
-✅ **Spatial modeling** - Random Forest + Kriging with AOA analysis  
-✅ **Uncertainty quantification** - Full error propagation  
-✅ **Verification ready** - Automated report generation  
+✅ **3-Part Workflow** - Modular design: GEE setup → Carbon stocks → Temporal analysis
+✅ **Stratum-aware analysis** - Flexible ecosystem stratification
+✅ **VM0033 compliant** - Conservative estimates (95% CI lower bound)
+✅ **ORRAA principles** - Transparent, science-based MRV
+✅ **Spatial modeling** - Random Forest + Kriging with AOA analysis
+✅ **Temporal analysis** - Additionality and multi-period monitoring
+✅ **Uncertainty quantification** - Full error propagation
 
 ---
 
-## 🗂️ WORKFLOW MODULES
+## 🚀 3-PART WORKFLOW STRUCTURE
 
-### **Phase 1: Setup & Data Preparation**
+### **PART 1: FIELD CAMPAIGN PLANNING** (Google Earth Engine)
+**Purpose:** Design sampling strategy and export spatial data
 
-#### **Module 00: Setup** ✅ COMPLETE
+**GEE Tools:**
+1. **Stratification Tool** - Define ecosystem boundaries, export stratum masks
+2. **Sampling Design Tool** - Generate stratified random sampling points
+3. **Covariate Extraction** - Export environmental covariates (NDVI, NDWI, SAR, elevation)
+
+**Deliverable:** Field sampling plan with GPS coordinates and covariate library
+
+---
+
+### **PART 2: CARBON STOCK ASSESSMENT** (R Modules 00-07)
+**Purpose:** Process field data and calculate carbon stocks for ONE scenario/time period
+
+**Key Concept:** Run Part 2 independently for each scenario/year (e.g., BASELINE 2020, PROJECT 2024, PROJECT 2029). Each run produces a complete carbon stock assessment.
+
+#### **Module 00: Setup** ✅
 - **File:** `00b_setup_directories_bluecarbon.R`
-- **Purpose:** Install packages, create directories, configuration
-- **Runtime:** 5-10 minutes
+- **Purpose:** Install packages, create directories, initialize configuration
 - **Outputs:** Directory structure, `blue_carbon_config.R`
 
-#### **Module 01: Data Preparation**
-- **File:** `01_data_prep_bluecarbon.R` (adapt from generic version)
-- **Purpose:** Load and clean core data with stratum handling
+#### **Module 01: Data Preparation** ✅
+- **File:** `01_data_prep_bluecarbon.R`
+- **Purpose:** Load and clean field core data for THIS scenario/year
 - **Key Features:**
-  - Validate 5 ecosystem strata
-  - VM0033 metadata (scenario, monitoring year)
+  - Validate ecosystem strata
+  - QA/QC checks (coordinates, SOC, bulk density)
+  - VM0033 sample size validation
   - Stratum-specific bulk density defaults
-  - Enhanced QA/QC by stratum
-- **Outputs:** `cores_clean_bluecarbon.rds`
+- **Outputs:** `data_processed/cores_clean_bluecarbon.rds`
 
-#### **Module 02: Exploratory Analysis**
-- **File:** `02_exploratory_analysis_bluecarbon.R` (adapt from generic)
+#### **Module 02: Exploratory Analysis** ✅
+- **File:** `02_exploratory_analysis_bluecarbon.R`
 - **Purpose:** EDA with stratum stratification
-- **Key Features:**
-  - Depth profiles by stratum
-  - Cross-stratum comparisons
-  - Outlier detection by ecosystem type
 - **Outputs:** Diagnostic plots by stratum
 
-### **Phase 2: Depth Harmonization**
-
-#### **Module 03: Spline Harmonization** ✅ COMPLETE
+#### **Module 03: Depth Harmonization** ✅
 - **File:** `03_depth_harmonization_bluecarbon.R`
 - **Purpose:** Standardize depth profiles to VM0033 intervals
 - **Key Features:**
-  - Stratum-specific spline parameters
-  - Bootstrap uncertainty (optional)
+  - Equal-area spline harmonization
+  - Bootstrap uncertainty quantification
   - Quality flags (realistic, monotonic)
-- **Outputs:** `cores_harmonized_spline_bluecarbon.rds`
+- **Outputs:** `data_processed/cores_harmonized_spline_bluecarbon.rds`
 
-### **Phase 3: Spatial Prediction**
-
-#### **Module 04: Kriging** ✅ COMPLETE
+#### **Module 04: Kriging** ✅
 - **File:** `04_raster_predictions_kriging_bluecarbon.R`
 - **Purpose:** Spatial interpolation with stratum-specific variograms
 - **Key Features:**
-  - Separate variograms per stratum
-  - Anisotropic models for tidal gradients
+  - Stratum-specific variogram models
   - Cross-validation
-  - Uncertainty rasters (variance)
-- **Outputs:** 
-  - `outputs/predictions/kriging/soc_*cm.tif`
-  - `outputs/predictions/uncertainty/variance_*cm.tif`
+  - Uncertainty rasters
+- **Outputs:** `outputs/predictions/kriging/soc_*cm.tif`
 
-#### **Module 05: Random Forest** ✅ COMPLETE  
+#### **Module 05: Random Forest** ✅
 - **File:** `05_raster_predictions_rf_bluecarbon.R`
-- **Purpose:** Machine learning predictions with coastal covariates
+- **Purpose:** ML-based spatial prediction with coastal covariates
 - **Key Features:**
-  - Stratum-aware training (spatial CV by stratum)
+  - Stratum as covariate (flexible auto-detection)
   - Coastal-specific covariates (NDWI, SAR, tidal metrics)
   - Area of Applicability (AOA) analysis
-  - Variable importance by stratum
-- **Outputs:**
-  - `outputs/predictions/rf/soc_rf_*cm.tif`
-  - `outputs/predictions/rf/aoa_*cm.tif`
-  - `outputs/models/rf/rf_models_all_depths.rds`
+  - Spatial cross-validation
+- **Outputs:** `outputs/predictions/rf/soc_rf_*cm.tif`, AOA maps
 
-### **Phase 4: Carbon Stock Calculation & Verification**
-
-#### **Module 06: Carbon Stock Calculation** ✅ COMPLETE
+#### **Module 06: Carbon Stock Calculation** ✅
 - **File:** `06_carbon_stock_calculation_bluecarbon.R`
 - **Purpose:** Convert SOC predictions → Total carbon stocks
 - **Key Features:**
-  - VM0033 depth intervals (0-30 cm, 30-100 cm)
+  - VM0033 depth intervals (0-30 cm, 30-100 cm, 0-100 cm total)
   - Conservative estimates (95% CI lower bound)
-  - Stratum-specific calculations
   - Uncertainty propagation
 - **Outputs:**
   - `outputs/carbon_stocks/carbon_stocks_by_stratum.csv`
-  - `outputs/carbon_stocks/carbon_stocks_conservative_vm0033.csv`
   - `outputs/carbon_stocks/maps/*.tif`
 
-#### **Module 07: MMRV Reporting** ✅ COMPLETE
+#### **Module 07: Single-Scenario MMRV Report** ✅
 - **File:** `07_mmrv_reporting_bluecarbon.R`
-- **Purpose:** Generate VM0033 verification package
+- **Purpose:** Generate verification package for THIS scenario/year
+- **Outputs:** `outputs/mmrv_reports/vm0033_report_[scenario]_[year].html`
+
+**How to run Part 2 for multiple scenarios:**
+```r
+# Run 1: Baseline
+PROJECT_SCENARIO <- "BASELINE"
+MONITORING_YEAR <- 2020
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+
+# Run 2: Project Year 1
+PROJECT_SCENARIO <- "PROJECT"
+MONITORING_YEAR <- 2024
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+
+# Run 3: Project Year 2
+PROJECT_SCENARIO <- "PROJECT"
+MONITORING_YEAR <- 2029
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+```
+
+---
+
+### **PART 3: TEMPORAL ANALYSIS & ADDITIONALITY** (R Modules 08-09)
+**Purpose:** Compare scenarios and calculate emission reductions
+
+**Key Concept:** Run Part 3 ONCE after all Part 2 scenarios are complete. Loads and compares multiple carbon stock outputs.
+
+#### **Module 08: Temporal Data Harmonization** ✅
+- **File:** `08_temporal_data_harmonization.R`
+- **Purpose:** Load and align carbon stocks from multiple scenarios/years
 - **Key Features:**
-  - HTML verification report
-  - Excel summary tables (4 required tables)
-  - QA/QC flagged areas
-  - Spatial data exports for GIS verification
+  - Auto-detect scenarios/years from file naming convention
+  - Validate spatial alignment (CRS, extent, resolution)
+  - Resample to common grid if needed
+  - Check stratum coverage across scenarios
 - **Outputs:**
-  - `outputs/mmrv_reports/vm0033_verification_package.html`
-  - `outputs/mmrv_reports/vm0033_summary_tables.xlsx`
-  - `outputs/mmrv_reports/spatial_exports/` (GeoTIFFs)
+  - `data_temporal/carbon_stocks_aligned.rds`
+  - `data_temporal/temporal_metadata.csv`
+  - `data_temporal/stratum_coverage.csv`
+
+#### **Module 09: Additionality & Temporal Change** ✅
+- **File:** `09_additionality_temporal_analysis.R`
+- **Purpose:** Calculate project vs baseline differences and temporal trends
+- **Key Features:**
+  - **Additionality Analysis (PROJECT - BASELINE):**
+    - Conservative estimates (95% CI lower bound)
+    - Statistical testing (t-tests, p-values)
+    - Uncertainty propagation
+    - Effect sizes (Cohen's d)
+    - Difference raster maps
+  - **Temporal Change Analysis (Multi-Period):**
+    - Sequestration rates (Mg C/ha/yr)
+    - Trend analysis
+    - Time series plots
+- **Outputs:**
+  - `outputs/additionality/additionality_by_stratum.csv`
+  - `outputs/additionality/additionality_*.tif` (difference maps)
+  - `outputs/temporal_change/temporal_trends_by_stratum.csv`
+  - `outputs/temporal_change/plots/*.png` (time series)
 
 ---
 
@@ -195,26 +242,43 @@ covariates/
 
 ## 🚀 QUICK START GUIDE
 
-### **1. Install and Setup**
+### **PART 1: GEE Preparation** (Before field work)
+Use Google Earth Engine to:
+1. Define ecosystem strata boundaries
+2. Export stratum masks to `data_raw/gee_strata/`
+3. Export covariates to `covariates/`
+4. Generate stratified sampling locations
+
+### **PART 2: Carbon Stock Assessment** (For each scenario/year)
+
+#### **Step 1: Install and Setup**
 ```r
-# Set working directory to project folder
+# Set working directory
 setwd("/path/to/blue_carbon_project")
 
-# Run setup
+# Run setup (only once)
 source("00b_setup_directories_bluecarbon.R")
 
 # Review and edit configuration
 file.edit("blue_carbon_config.R")
 ```
 
-### **2. Prepare Your Data**
-- Add field data CSVs to `data_raw/`
-- Add GEE covariate TIFs to `covariates/`
-- Verify file formats and column names
-
-### **3. Run Analysis Pipeline**
+#### **Step 2: Configure Scenario**
+Edit `blue_carbon_config.R`:
 ```r
-# Data preparation (adapt Module 01 for your data format)
+PROJECT_SCENARIO <- "BASELINE"  # or "PROJECT", "CONTROL", etc.
+MONITORING_YEAR <- 2020         # Year of data collection
+```
+
+#### **Step 3: Prepare Data**
+- Add field data CSVs to `data_raw/`:
+  - `core_locations.csv` (GPS coordinates, stratum, scenario_type)
+  - `core_samples.csv` (depth profiles, SOC, bulk density)
+- Verify GEE exports are in place
+
+#### **Step 4: Run Carbon Stock Pipeline**
+```r
+# Data preparation
 source("01_data_prep_bluecarbon.R")
 
 # Exploratory analysis
@@ -230,22 +294,71 @@ source("05_raster_predictions_rf_bluecarbon.R")       # Random Forest (recommend
 # Carbon stock calculation
 source("06_carbon_stock_calculation_bluecarbon.R")
 
-# Generate verification package
+# Generate single-scenario report
 source("07_mmrv_reporting_bluecarbon.R")
 ```
 
-### **4. Review Outputs**
+#### **Step 5: Review Single-Scenario Outputs**
 ```r
-# Open verification report in browser
+# Open verification report
 browseURL("outputs/mmrv_reports/vm0033_verification_package.html")
 
 # Review carbon stocks
-stocks <- read.csv("outputs/carbon_stocks/carbon_stocks_conservative_vm0033.csv")
+stocks <- read.csv("outputs/carbon_stocks/carbon_stocks_by_stratum.csv")
 print(stocks)
+```
 
-# Check model performance
-cv_results <- read.csv("diagnostics/crossvalidation/rf_cv_results.csv")
-print(cv_results)
+#### **Step 6: Repeat for Additional Scenarios**
+Change `PROJECT_SCENARIO` and `MONITORING_YEAR` in config, then re-run Steps 4-5.
+
+**Example multi-scenario workflow:**
+```r
+# Scenario 1: Baseline
+PROJECT_SCENARIO <- "BASELINE"
+MONITORING_YEAR <- 2020
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+
+# Scenario 2: Project Year 1
+PROJECT_SCENARIO <- "PROJECT"
+MONITORING_YEAR <- 2024
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+
+# Scenario 3: Project Year 2
+PROJECT_SCENARIO <- "PROJECT"
+MONITORING_YEAR <- 2029
+source("01_data_prep_bluecarbon.R")  # Run through Module 07
+```
+
+---
+
+### **PART 3: Temporal Analysis** (After all scenarios are complete)
+
+#### **Step 1: Harmonize Temporal Data**
+```r
+# Load and align all scenario/year datasets
+source("08_temporal_data_harmonization.R")
+```
+
+This will detect and align all carbon stock outputs from Part 2.
+
+#### **Step 2: Analyze Additionality and Trends**
+```r
+# Calculate PROJECT - BASELINE and temporal trends
+source("09_additionality_temporal_analysis.R")
+```
+
+#### **Step 3: Review Temporal Outputs**
+```r
+# Additionality results
+additionality <- read.csv("outputs/additionality/additionality_by_stratum.csv")
+print(additionality)
+
+# Temporal trends
+trends <- read.csv("outputs/temporal_change/temporal_trends_by_stratum.csv")
+print(trends)
+
+# View time series plots
+list.files("outputs/temporal_change/plots/", pattern = "*.png")
 ```
 
 ---
