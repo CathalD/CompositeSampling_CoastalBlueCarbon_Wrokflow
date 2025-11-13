@@ -21,6 +21,15 @@ if (file.exists("blue_carbon_config.R")) {
   stop("Configuration file not found. Run 00_setup_bluecarbon.R first.")
 }
 
+# Verify required config variables are loaded
+required_vars <- c("VM0033_MIN_CORES", "CONFIDENCE_LEVEL", "VALID_STRATA",
+                   "INPUT_CRS", "PROCESSING_CRS", "BD_DEFAULTS")
+missing_vars <- required_vars[!sapply(required_vars, exists)]
+if (length(missing_vars) > 0) {
+  stop(sprintf("Configuration error: Missing required variables: %s\nPlease check blue_carbon_config.R",
+               paste(missing_vars, collapse=", ")))
+}
+
 # Initialize logging
 log_file <- file.path("logs", paste0("data_prep_", Sys.Date(), ".log"))
 if (!dir.exists("logs")) dir.create("logs")
