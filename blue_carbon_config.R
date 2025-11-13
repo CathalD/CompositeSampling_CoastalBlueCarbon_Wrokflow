@@ -232,6 +232,54 @@ MODELING_UNCERTAINTY_BUFFER <- 10  # percent
 MODELED_RASTER_RESOLUTION <- 30  # meters
 
 # ============================================================================
+# BAYESIAN PRIOR PARAMETERS (Part 4 - Optional)
+# ============================================================================
+
+# Enable Bayesian workflow (requires GEE prior maps)
+USE_BAYESIAN <- FALSE  # Set to TRUE to enable Part 4
+
+# Prior data directory
+BAYESIAN_PRIOR_DIR <- "data_prior"
+
+# GEE Data Sources (BC Coast)
+# SoilGrids 250m - Global soil organic carbon maps
+GEE_SOILGRIDS_ASSET <- "projects/soilgrids-isric/soc_mean"
+GEE_SOILGRIDS_UNCERTAINTY <- "projects/soilgrids-isric/soc_uncertainty"
+
+# Sothe et al. 2022 - BC Forest biomass and soil carbon
+# Users should input their specific GEE asset paths here:
+GEE_SOTHE_FOREST_BIOMASS <- ""  # User to provide
+GEE_SOTHE_SOIL_CARBON <- ""     # User to provide
+GEE_SOTHE_OTHER_BIOMASS <- ""   # User to provide
+
+# Prior resolution (will be resampled to PREDICTION_RESOLUTION)
+PRIOR_RESOLUTION <- 250  # meters (SoilGrids native resolution)
+
+# Bayesian sampling design (Neyman allocation)
+USE_NEYMAN_SAMPLING <- TRUE  # Enable optimal allocation based on prior uncertainty
+NEYMAN_STRATA <- 3           # Number of uncertainty strata (low/med/high)
+NEYMAN_BUFFER_SAMPLES <- 1.2 # Oversample by 20% to account for inaccessible locations
+
+# Uncertainty strata thresholds (coefficient of variation %)
+UNCERTAINTY_LOW_THRESHOLD <- 10    # CV < 10% = low uncertainty
+UNCERTAINTY_HIGH_THRESHOLD <- 30   # CV > 30% = high uncertainty
+# Medium uncertainty = between thresholds
+
+# Bayesian posterior weighting
+# How to weight prior vs field data based on sample size
+BAYESIAN_WEIGHT_METHOD <- "sqrt_samples"  # Options: "sqrt_samples", "linear", "fixed"
+BAYESIAN_FIXED_WEIGHT <- 0.5              # Only used if method = "fixed"
+BAYESIAN_TARGET_SAMPLES <- 30             # Target sample size for full field weight
+
+# Precision adjustment
+# Inflate prior uncertainty to account for potential bias/mismatch
+PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by this factor (conservative)
+
+# Information gain threshold
+# Minimum posterior uncertainty reduction to declare "informative prior"
+MIN_INFORMATION_GAIN_PCT <- 20  # At least 20% uncertainty reduction
+
+# ============================================================================
 # DEPTH HARMONIZATION PARAMETERS
 # ============================================================================
 
