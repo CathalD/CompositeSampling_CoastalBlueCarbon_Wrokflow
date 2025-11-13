@@ -430,34 +430,48 @@ for (depth in STANDARD_DEPTHS) {
   
   # Prepare predictors
   response <- depth_data$soc_harmonized
-  
-  # Predictors WITHOUT stratum (for spatial prediction)
-  predictors_no_stratum <- depth_data %>%
+
+  # All predictors (including stratum if available as raster covariate)
+  predictors <- depth_data %>%
     select(all_of(covariate_names)) %>%
     as.data.frame()
-  
-  # Predictors WITH stratum (for CV - captures ecosystem differences)
-  predictors_with_stratum <- predictors_no_stratum
-  predictors_with_stratum$stratum <- as.factor(depth_data$stratum)
-  
+
+  # Convert stratum to factor if it's included
+  if ("stratum" %in% names(predictors)) {
+    predictors$stratum <- as.factor(predictors$stratum)
+    log_message(sprintf("  Stratum covariate included (%d categories)",
+                       length(unique(predictors$stratum))))
+  }
+
+  # Check for Module 03 uncertainties
+  has_uncertainties <- all(c("soc_se_combined", "is_interpolated") %in% names(depth_data))
+  if (has_uncertainties) {
+    harmonization_se <- depth_data$soc_se_combined
+    harmonization_var_mean <- mean(harmonization_se^2, na.rm = TRUE)
+    log_message(sprintf("  Module 03 uncertainties available: mean SE = %.2f g/kg",
+                       sqrt(harmonization_var_mean)))
+  } else {
+    harmonization_var_mean <- 0
+  }
+
   # ========================================================================
-  # TRAIN RF MODEL (without stratum for spatial prediction)
+  # TRAIN RF MODEL
   # ========================================================================
-  
-  log_message("  Training RF model for spatial prediction...")
-  
+
+  log_message("  Training RF model...")
+
   set.seed(CV_SEED)
-  
-  # Determine mtry (based on covariates only, not including stratum)
+
+  # Determine mtry
   mtry <- if (is.null(RF_MTRY)) {
-    floor(sqrt(ncol(predictors_no_stratum)))
+    floor(sqrt(ncol(predictors)))
   } else {
     RF_MTRY
   }
-  
-  # Main model WITHOUT stratum (for spatial prediction)
+
+  # Main RF model
   rf_model <- randomForest(
-    x = predictors_no_stratum,
+    x = predictors,
     y = response,
     ntree = RF_NTREE,
     mtry = mtry,
@@ -503,33 +517,33 @@ for (depth in STANDARD_DEPTHS) {
       cv_me <- NA
       cv_r2 <- NA
     } else {
-      # Perform CV - use model WITHOUT stratum for consistency
+      # Perform CV with full predictor set
       cv_predictions <- numeric(nrow(depth_data))
-      
+
       for (fold in 1:n_unique_folds) {
         test_idx <- which(spatial_folds == fold)
         train_idx <- which(spatial_folds != fold)
-        
+
         if (length(test_idx) == 0 || length(train_idx) < 10) {
           log_message(sprintf("  Fold %d: skipping (insufficient samples)", fold), "WARNING")
           next
         }
-        
-        log_message(sprintf("  Fold %d: train=%d, test=%d", 
+
+        log_message(sprintf("  Fold %d: train=%d, test=%d",
                            fold, length(train_idx), length(test_idx)))
-        
-        # Train fold model (without stratum for consistency with spatial prediction)
+
+        # Train fold model
         rf_fold <- randomForest(
-          x = predictors_no_stratum[train_idx, ],
+          x = predictors[train_idx, ],
           y = response[train_idx],
           ntree = RF_NTREE,
           mtry = mtry,
           nodesize = RF_MIN_NODE_SIZE,
           na.action = na.omit
         )
-        
+
         # Predict on test fold
-        cv_predictions[test_idx] <- predict(rf_fold, predictors_no_stratum[test_idx, ])
+        cv_predictions[test_idx] <- predict(rf_fold, predictors[test_idx, ])
       }
       
       # Calculate CV metrics
@@ -604,9 +618,61 @@ for (depth in STANDARD_DEPTHS) {
   pred_file <- file.path("outputs/predictions/rf",
                         sprintf("soc_rf_%.0fcm.tif", depth))
   writeRaster(pred_raster, pred_file, overwrite = TRUE)
-  
+
   log_message(sprintf("  Saved: %s", basename(pred_file)))
-  
+
+  # ========================================================================
+  # PREDICTION UNCERTAINTY
+  # ========================================================================
+
+  log_message("  Calculating prediction uncertainty...")
+
+  # Get predictions from all trees for uncertainty quantification
+  # predict.all gives us predictions from each tree
+  all_tree_preds <- predict(rf_model, predictors, predict.all = TRUE)$individual
+
+  # Calculate variance across trees as RF uncertainty
+  rf_var <- apply(all_tree_preds, 1, var)
+  rf_se_mean <- mean(sqrt(rf_var), na.rm = TRUE)
+
+  log_message(sprintf("  Mean RF SE: %.2f g/kg", rf_se_mean))
+
+  # For spatial prediction, calculate pixel-wise uncertainty
+  # This requires predicting with all trees across the raster
+  log_message("  Calculating spatial uncertainty (this may take a while)...")
+
+  # Get all tree predictions for the raster
+  all_tree_pred_raster <- predict(covariate_stack, rf_model, predict.all = TRUE)$individual
+
+  # Calculate variance raster
+  rf_var_raster <- app(all_tree_pred_raster, var, na.rm = TRUE)
+  rf_se_raster <- sqrt(rf_var_raster)
+
+  # Combine with Module 03 harmonization uncertainty
+  if (has_uncertainties && harmonization_var_mean > 0) {
+    # Combined variance = RF variance + harmonization variance
+    combined_var_raster <- rf_var_raster + harmonization_var_mean
+    combined_se_raster <- sqrt(combined_var_raster)
+
+    log_message(sprintf("  Combined uncertainty: RF + harmonization (mean SE = %.2f g/kg)",
+                       mean(values(combined_se_raster), na.rm = TRUE)))
+  } else {
+    combined_var_raster <- rf_var_raster
+    combined_se_raster <- rf_se_raster
+  }
+
+  # Save RF-only SE
+  se_rf_file <- file.path("outputs/predictions/rf",
+                          sprintf("se_rf_%.0fcm.tif", depth))
+  writeRaster(rf_se_raster, se_rf_file, overwrite = TRUE)
+
+  # Save combined SE (recommended for VM0033)
+  se_combined_file <- file.path("outputs/predictions/rf",
+                                sprintf("se_combined_%.0fcm.tif", depth))
+  writeRaster(combined_se_raster, se_combined_file, overwrite = TRUE)
+
+  log_message("  Saved uncertainty rasters")
+
   # ========================================================================
   # AREA OF APPLICABILITY (if CAST available)
   # ========================================================================
@@ -616,7 +682,7 @@ for (depth in STANDARD_DEPTHS) {
     
     tryCatch({
       aoa_result <- aoa(
-        train = predictors_no_stratum,
+        train = predictors,
         predictors = covariate_stack,
         variables = covariate_names
       )
@@ -645,6 +711,138 @@ for (depth in STANDARD_DEPTHS) {
     cv_metrics = cv_results_all[nrow(cv_results_all), ]
   )
 }
+
+# ============================================================================
+# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# ============================================================================
+
+log_message("\n=== VM0033 Layer Aggregation ===")
+
+# Create output directory for stocks
+dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
+
+# Load bulk density data (check multiple possible sources)
+bd_data <- NULL
+
+# Try to load bulk density from Module 01
+if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
+  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
+  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
+    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
+    bd_data <- cores_all %>%
+      filter(!is.na(!!sym(bd_field))) %>%
+      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
+    log_message(sprintf("Loaded bulk density data from cores: %.3f g/cm³", bd_data$mean_bd))
+  }
+}
+
+# Default BD value if no data available (typical blue carbon values)
+bd_value <- if (!is.null(bd_data) && nrow(bd_data) > 0) bd_data$mean_bd else 0.5
+log_message(sprintf("Using bulk density: %.3f g/cm³", bd_value))
+
+# Initialize stock layers
+stock_layers <- list()
+
+# Process each VM0033 layer
+for (i in 1:nrow(VM0033_DEPTH_INTERVALS)) {
+
+  depth_top <- VM0033_DEPTH_INTERVALS$depth_top[i]
+  depth_bottom <- VM0033_DEPTH_INTERVALS$depth_bottom[i]
+  depth_midpoint <- VM0033_DEPTH_INTERVALS$depth_midpoint[i]
+  thickness_cm <- VM0033_DEPTH_INTERVALS$thickness_cm[i]
+
+  log_message(sprintf("Layer %d: %d-%d cm (midpoint %.1f cm, thickness %d cm)",
+                     i, depth_top, depth_bottom, depth_midpoint, thickness_cm))
+
+  # Load SOC prediction raster for this depth midpoint
+  soc_file <- file.path("outputs/predictions/rf",
+                        sprintf("soc_rf_%.0fcm.tif", depth_midpoint))
+
+  if (!file.exists(soc_file)) {
+    log_message(sprintf("  SOC file not found: %s - skipping", basename(soc_file)), "WARNING")
+    next
+  }
+
+  soc_raster <- rast(soc_file)
+
+  # Convert SOC concentration (g/kg) to SOC stock (Mg C/ha)
+  # Formula: Stock (Mg/ha) = SOC (g/kg) × BD (g/cm³) × thickness (cm) × 10
+  stock_raster <- soc_raster * bd_value * thickness_cm * 10
+
+  # Save layer stock
+  stock_file <- file.path("outputs/predictions/stocks",
+                         sprintf("stock_rf_layer%d_%d-%dcm.tif",
+                                i, depth_top, depth_bottom))
+  writeRaster(stock_raster, stock_file, overwrite = TRUE)
+
+  stock_layers[[paste0("layer_", i)]] <- stock_raster
+
+  mean_stock <- mean(values(stock_raster), na.rm = TRUE)
+  log_message(sprintf("  Mean stock: %.2f Mg C/ha", mean_stock))
+
+  # Propagate uncertainty to stock
+  se_file <- file.path("outputs/predictions/rf",
+                      sprintf("se_combined_%.0fcm.tif", depth_midpoint))
+
+  if (file.exists(se_file)) {
+    se_raster <- rast(se_file)
+
+    # Stock SE = SOC_SE × BD × thickness × 10
+    stock_se_raster <- se_raster * bd_value * thickness_cm * 10
+
+    # Save stock SE
+    stock_se_file <- file.path("outputs/predictions/stocks",
+                              sprintf("stock_rf_se_layer%d_%d-%dcm.tif",
+                                     i, depth_top, depth_bottom))
+    writeRaster(stock_se_raster, stock_se_file, overwrite = TRUE)
+
+    mean_stock_se <- mean(values(stock_se_raster), na.rm = TRUE)
+    log_message(sprintf("  Mean stock SE: %.2f Mg C/ha", mean_stock_se))
+  }
+}
+
+# Calculate cumulative stocks if we have all layers
+if (length(stock_layers) > 0) {
+
+  # Total stock to 1m depth (sum of all layers)
+  if (length(stock_layers) == 4) {
+    total_stock <- Reduce(`+`, stock_layers)
+
+    total_file <- file.path("outputs/predictions/stocks",
+                           "stock_rf_total_0-100cm.tif")
+    writeRaster(total_stock, total_file, overwrite = TRUE)
+
+    mean_total <- mean(values(total_stock), na.rm = TRUE)
+    log_message(sprintf("Total stock (0-100 cm): %.2f Mg C/ha", mean_total))
+  }
+
+  # Cumulative stocks for common reporting depths
+  # 0-30 cm (top 2 layers)
+  if (length(stock_layers) >= 2) {
+    stock_0_30 <- stock_layers[[1]] + stock_layers[[2]]
+
+    stock_file <- file.path("outputs/predictions/stocks",
+                           "stock_rf_cumulative_0-30cm.tif")
+    writeRaster(stock_0_30, stock_file, overwrite = TRUE)
+
+    mean_030 <- mean(values(stock_0_30), na.rm = TRUE)
+    log_message(sprintf("Cumulative stock (0-30 cm): %.2f Mg C/ha", mean_030))
+  }
+
+  # 0-50 cm (top 3 layers)
+  if (length(stock_layers) >= 3) {
+    stock_0_50 <- stock_layers[[1]] + stock_layers[[2]] + stock_layers[[3]]
+
+    stock_file <- file.path("outputs/predictions/stocks",
+                           "stock_rf_cumulative_0-50cm.tif")
+    writeRaster(stock_0_50, stock_file, overwrite = TRUE)
+
+    mean_050 <- mean(values(stock_0_50), na.rm = TRUE)
+    log_message(sprintf("Cumulative stock (0-50 cm): %.2f Mg C/ha", mean_050))
+  }
+}
+
+log_message("\nVM0033 layer aggregation complete")
 
 # ============================================================================
 # SAVE MODELS AND RESULTS
@@ -701,28 +899,77 @@ if (nrow(cv_results_all) > 0) {
   
   ggsave("diagnostics/crossvalidation/rf_cv_r2.png",
          p_r2, width = 10, height = 6, dpi = 300)
-  
-  # Variable importance for surface layer
-  if ("0" %in% names(rf_models)) {
-    var_imp_0cm <- rf_models[["0"]]$var_importance %>%
+
+  # ======================================================================
+  # VARIABLE IMPORTANCE PLOTS FOR ALL DEPTHS
+  # ======================================================================
+
+  log_message("Creating variable importance plots for all depths...")
+
+  dir.create("diagnostics/variable_importance", recursive = TRUE, showWarnings = FALSE)
+
+  for (depth_name in names(rf_models)) {
+    depth_val <- as.numeric(depth_name)
+
+    var_imp_df <- rf_models[[depth_name]]$var_importance %>%
       head(15)
-    
-    p_var_imp <- ggplot(var_imp_0cm, 
+
+    p_var_imp <- ggplot(var_imp_df,
                         aes(x = reorder(variable, importance), y = importance)) +
       geom_col(fill = "#D32F2F", alpha = 0.7) +
       coord_flip() +
       labs(
-        title = "Variable Importance at 0 cm",
-        subtitle = "Top 15 variables",
+        title = sprintf("Variable Importance at %.1f cm", depth_val),
+        subtitle = "Top 15 variables (%IncMSE)",
         x = "",
         y = "Importance (%IncMSE)"
       ) +
       theme_minimal()
-    
-    ggsave("diagnostics/crossvalidation/rf_variable_importance_0cm.png",
+
+    ggsave(sprintf("diagnostics/variable_importance/rf_var_imp_%.0fcm.png", depth_val),
            p_var_imp, width = 8, height = 10, dpi = 300)
   }
-  
+
+  # Combined variable importance across all depths
+  if (length(rf_models) > 0) {
+    all_var_imp <- data.frame()
+
+    for (depth_name in names(rf_models)) {
+      depth_val <- as.numeric(depth_name)
+      var_imp_df <- rf_models[[depth_name]]$var_importance
+      var_imp_df$depth_cm <- depth_val
+      all_var_imp <- rbind(all_var_imp, var_imp_df)
+    }
+
+    # Get top variables overall
+    top_vars <- all_var_imp %>%
+      group_by(variable) %>%
+      summarise(mean_importance = mean(importance), .groups = "drop") %>%
+      arrange(desc(mean_importance)) %>%
+      head(10) %>%
+      pull(variable)
+
+    # Plot importance across depths for top variables
+    top_var_data <- all_var_imp %>%
+      filter(variable %in% top_vars)
+
+    p_var_depth <- ggplot(top_var_data,
+                          aes(x = factor(depth_cm), y = importance,
+                              fill = variable)) +
+      geom_col(position = "dodge") +
+      labs(
+        title = "Top 10 Variables: Importance Across Depths",
+        x = "Depth (cm)",
+        y = "Importance (%IncMSE)",
+        fill = "Variable"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "right")
+
+    ggsave("diagnostics/variable_importance/rf_var_imp_by_depth.png",
+           p_var_depth, width = 12, height = 8, dpi = 300)
+  }
+
   log_message("Saved summary plots")
 }
 
@@ -757,20 +1004,39 @@ if (nrow(cv_results_all) > 0) {
 }
 
 cat("\nOutputs:\n")
-cat("  Predictions: outputs/predictions/rf/soc_rf_*cm.tif\n")
+cat("  SOC Predictions (g/kg): outputs/predictions/rf/soc_rf_*cm.tif\n")
+cat("  Prediction Uncertainty:\n")
+cat("    - RF-only SE: outputs/predictions/rf/se_rf_*cm.tif\n")
+cat("    - Combined SE (RF + harmonization): outputs/predictions/rf/se_combined_*cm.tif\n")
+cat("  SOC Stocks (Mg C/ha): outputs/predictions/stocks/\n")
+cat("    - Layer stocks: stock_rf_layer*_*-*cm.tif\n")
+cat("    - Cumulative stocks: stock_rf_cumulative_0-*cm.tif\n")
+cat("    - Total stock: stock_rf_total_0-100cm.tif\n")
+cat("    - Stock SE: stock_rf_se_layer*_*-*cm.tif\n")
 
 if (has_CAST && ENABLE_AOA) {
-  cat("  AOA: outputs/predictions/rf/aoa_*cm.tif\n")
-  cat("  DI: outputs/predictions/rf/di_*cm.tif\n")
+  cat("  Area of Applicability:\n")
+  cat("    - AOA masks: outputs/predictions/rf/aoa_*cm.tif\n")
+  cat("    - Dissimilarity Index: outputs/predictions/rf/di_*cm.tif\n")
 }
 
 cat("  Models: outputs/models/rf/rf_models_all_depths.rds\n")
-cat("  CV results: diagnostics/crossvalidation/rf_cv_results.csv\n")
+cat("  Diagnostics:\n")
+cat("    - CV results: diagnostics/crossvalidation/rf_cv_results.csv\n")
+cat("    - CV plots: diagnostics/crossvalidation/rf_cv_*.png\n")
+cat("    - Variable importance: diagnostics/variable_importance/rf_var_imp_*.png\n")
+
+cat("\nKey Features:\n")
+cat("  - Stratum as categorical covariate (if GEE masks available)\n")
+cat("  - Prediction uncertainty quantification (RF + Module 03)\n")
+cat("  - VM0033 layer aggregation with stock calculation\n")
+cat("  - Variable importance analysis for all depths\n")
 
 cat("\nNext steps:\n")
 cat("  1. Review CV plots in diagnostics/crossvalidation/\n")
-cat("  2. Check variable importance\n")
-cat("  3. Compare with kriging predictions (Module 04)\n")
-cat("  4. Review AOA to identify extrapolation areas\n\n")
+cat("  2. Check variable importance plots for all depths\n")
+cat("  3. Compare RF vs kriging predictions (Module 04)\n")
+cat("  4. Review AOA to identify extrapolation areas\n")
+cat("  5. Validate stock calculations against field measurements\n\n")
 
 log_message("=== MODULE 05 COMPLETE ===")
