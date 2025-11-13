@@ -132,11 +132,29 @@ load_stock_rasters <- function(method) {
 
   log_message(sprintf("Loading %d stock rasters for %s method", length(stock_files), method))
 
-  for (file in stock_files) {
-    # Extract depth from filename
-    depth <- as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(file)))
-    stocks[[as.character(depth)]] <- rast(file)
-    log_message(sprintf("  Loaded: stock at depth %.0f cm", depth))
+  # Group files by depth (handle multiple strata per depth)
+  depth_files <- data.frame(
+    file = stock_files,
+    depth = sapply(stock_files, function(f) {
+      as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+    })
+  )
+
+  for (d in unique(depth_files$depth)) {
+    files_at_depth <- depth_files$file[depth_files$depth == d]
+
+    if (length(files_at_depth) == 1) {
+      # Single file for this depth
+      stocks[[as.character(d)]] <- rast(files_at_depth)
+      log_message(sprintf("  Loaded: stock at depth %.0f cm", d))
+    } else {
+      # Multiple files (e.g., different strata) - mosaic them
+      log_message(sprintf("  Loading %d files for depth %.0f cm (mosaicking strata)",
+                         length(files_at_depth), d))
+      rasters <- lapply(files_at_depth, rast)
+      stocks[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
+      log_message(sprintf("  Mosaicked: stock at depth %.0f cm", d))
+    }
   }
 
   # Load uncertainty rasters
@@ -145,10 +163,29 @@ load_stock_rasters <- function(method) {
   if (length(se_files) > 0) {
     log_message(sprintf("Loading %d uncertainty rasters for %s method", length(se_files), method))
 
-    for (file in se_files) {
-      depth <- as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(file)))
-      uncertainties[[as.character(depth)]] <- rast(file)
-      log_message(sprintf("  Loaded: SE at depth %.0f cm", depth))
+    # Group SE files by depth
+    se_depth_files <- data.frame(
+      file = se_files,
+      depth = sapply(se_files, function(f) {
+        as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+      })
+    )
+
+    for (d in unique(se_depth_files$depth)) {
+      files_at_depth <- se_depth_files$file[se_depth_files$depth == d]
+
+      if (length(files_at_depth) == 1) {
+        # Single file for this depth
+        uncertainties[[as.character(d)]] <- rast(files_at_depth)
+        log_message(sprintf("  Loaded: SE at depth %.0f cm", d))
+      } else {
+        # Multiple files - mosaic them
+        log_message(sprintf("  Loading %d SE files for depth %.0f cm (mosaicking strata)",
+                           length(files_at_depth), d))
+        rasters <- lapply(files_at_depth, rast)
+        uncertainties[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
+        log_message(sprintf("  Mosaicked: SE at depth %.0f cm", d))
+      }
     }
   } else {
     log_message(sprintf("No uncertainty files found for %s method", method), "WARNING")
