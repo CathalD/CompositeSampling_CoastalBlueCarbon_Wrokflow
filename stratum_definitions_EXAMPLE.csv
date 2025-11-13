@@ -1,0 +1,5 @@
+stratum_name,gee_file,stratum_code,description,restoration_type,baseline_vs_project,age_years
+Emerging Marsh,emerging_marsh.tif,1,Recently restored marsh (0-5 years),active_restoration,project,3
+Restored Marsh,restored_marsh.tif,2,Established restored marsh (>5 years),active_restoration,project,8
+Degraded Marsh,degraded_marsh.tif,3,Degraded baseline condition,none,baseline,NA
+Reference Marsh,reference_natural.tif,4,Natural reference site,natural,reference,NA

@@ -296,6 +296,128 @@ BD_DEFAULTS <- list(
 
 ---
 
+## 🗺️ CUSTOMIZING ECOSYSTEM STRATA
+
+Module 05 supports flexible stratum definitions to accommodate different project types, management zones, or restoration stages. You have two options:
+
+### **Method 1: Simple Configuration (Recommended)**
+
+Define your strata in `blue_carbon_config.R` using `VALID_STRATA`:
+
+```r
+# Example: Restoration stages
+VALID_STRATA <- c(
+  "Emerging Marsh",
+  "Restored Marsh",
+  "Degraded Marsh",
+  "Reference Marsh"
+)
+```
+
+Module 05 will **auto-detect GEE export files** using this naming convention:
+- **"Emerging Marsh"** → `data_raw/gee_strata/emerging_marsh.tif`
+- **"Restored Marsh"** → `data_raw/gee_strata/restored_marsh.tif`
+- **"Degraded Marsh"** → `data_raw/gee_strata/degraded_marsh.tif`
+- **"Reference Marsh"** → `data_raw/gee_strata/reference_marsh.tif`
+
+**Convention:** Stratum names are converted to lowercase with underscores replacing spaces.
+
+### **Method 2: Advanced CSV Configuration**
+
+For custom file names or additional metadata, create `stratum_definitions.csv` in the project root:
+
+```csv
+stratum_name,gee_file,stratum_code,description,restoration_type,baseline_vs_project,age_years
+Emerging Marsh,emerging_marsh.tif,1,Recently restored marsh (0-5 years),active_restoration,project,3
+Restored Marsh,restored_marsh.tif,2,Established restored marsh (>5 years),active_restoration,project,8
+Degraded Marsh,degraded_marsh.tif,3,Degraded baseline condition,none,baseline,NA
+Reference Marsh,reference_natural.tif,4,Natural reference site,natural,reference,NA
+```
+
+**Required columns:**
+- `stratum_name` - Display name for reports
+- `gee_file` - Filename in `data_raw/gee_strata/`
+- `stratum_code` - Numeric code (must be unique)
+
+**Optional columns:** (can be left blank)
+- `description` - Text description
+- `restoration_type` - Type of restoration activity
+- `baseline_vs_project` - VM0033 scenario classification
+- `age_years` - Age of restored area
+
+See `stratum_definitions_EXAMPLE.csv` for template.
+
+### **Stratum Definition Examples**
+
+#### **Restoration Stages**
+```r
+VALID_STRATA <- c("Emerging Marsh", "Restored Marsh", "Degraded Marsh", "Reference Marsh")
+```
+Use for: Tracking carbon accumulation across restoration timeline
+
+#### **Habitat Types**
+```r
+VALID_STRATA <- c("Salt Marsh", "Eelgrass Beds", "Mangrove", "Mudflat")
+```
+Use for: Multi-habitat coastal projects
+
+#### **Management Zones**
+```r
+VALID_STRATA <- c("Protected", "Managed", "Degraded", "Restored")
+```
+Use for: Conservation area management
+
+#### **VM0033 Scenarios**
+```r
+VALID_STRATA <- c("Baseline", "Project", "Control", "Reference")
+```
+Use for: Additionality analysis and baseline comparison
+
+### **GEE Stratum Export Workflow**
+
+1. **Export binary masks from Google Earth Engine** for each stratum:
+   - Value = 1 where stratum is present
+   - Value = 0 or NA elsewhere
+   - Export as GeoTIFF to `data_raw/gee_strata/`
+
+2. **Use consistent naming:**
+   - Follow lowercase + underscore convention
+   - Example: "Upper Marsh" → `upper_marsh.tif`
+
+3. **Module 05 will:**
+   - Detect and validate all stratum files
+   - Warn about missing files but continue with available ones
+   - Create unified categorical raster
+   - Use stratum as Random Forest covariate
+   - Save reference of used strata to `data_processed/stratum_mapping_used.csv`
+
+### **Troubleshooting Strata**
+
+#### **"No VALID_STRATA defined"**
+- **Cause:** Missing stratum configuration
+- **Fix:** Define `VALID_STRATA` in `blue_carbon_config.R` or create `stratum_definitions.csv`
+
+#### **"Stratum file missing"**
+- **Cause:** GEE export file not found in `data_raw/gee_strata/`
+- **Fix:** Check file name matches convention, verify directory location
+- **Note:** Module 05 will warn but continue with available strata
+
+#### **"Stratum not in VALID_STRATA"**
+- **Cause:** Core data references stratum not in config
+- **Fix:** Update `VALID_STRATA` to include all strata in field data
+
+#### **Strata overlap in raster**
+- **Cause:** Multiple stratum masks have value 1 at same location
+- **Fix:** Review GEE export logic, ensure mutually exclusive masks
+- **Note:** If overlap occurs, higher stratum_code takes precedence
+
+### **Files Created by Module 05**
+
+- `data_processed/stratum_raster.tif` - Unified categorical raster
+- `data_processed/stratum_mapping_used.csv` - Reference of strata used in analysis
+
+---
+
 ## 📈 EXPECTED OUTPUTS
 
 ### **Carbon Stock Maps**

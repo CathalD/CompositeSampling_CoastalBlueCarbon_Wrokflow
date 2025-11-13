@@ -21,6 +21,23 @@ PROJECT_DESCRIPTION <- "Blue carbon assessment of coastal salt marsh and eelgras
 # ============================================================================
 
 # Valid ecosystem strata (must match GEE stratification tool)
+#
+# FILE NAMING CONVENTION:
+#   Module 05 auto-detects GEE stratum masks using this pattern:
+#   "Stratum Name" → stratum_name.tif in data_raw/gee_strata/
+#
+# Examples:
+#   "Upper Marsh"           → upper_marsh.tif
+#   "Underwater Vegetation" → underwater_vegetation.tif
+#   "Emerging Marsh"        → emerging_marsh.tif
+#
+# CUSTOMIZATION OPTIONS:
+#   1. Simple: Edit VALID_STRATA below and export GEE masks with matching names
+#   2. Advanced: Create stratum_definitions.csv in project root for custom file names
+#      and optional metadata (see stratum_definitions_EXAMPLE.csv template)
+#
+# See README section "Customizing Ecosystem Strata" for full details.
+#
 VALID_STRATA <- c(
   "Upper Marsh",           # Infrequent flooding, salt-tolerant shrubs
   "Mid Marsh",             # Regular inundation, mixed halophytes (HIGHEST C sequestration)
