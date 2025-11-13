@@ -6,8 +6,8 @@
 # INPUTS:
 #   - outputs/predictions/kriging/stock_*cm.tif (from Module 04)
 #   - outputs/predictions/kriging/stock_se_*cm.tif (from Module 04)
-#   - outputs/predictions/rf/stock_rf_*cm.tif (from Module 05)
-#   - outputs/predictions/rf/stock_rf_se_*cm.tif (from Module 05)
+#   - outputs/predictions/stocks/stock_rf_*cm.tif (from Module 05)
+#   - outputs/predictions/stocks/stock_rf_se_*cm.tif (from Module 05)
 #   - data_processed/stratum_raster.tif (from Module 05)
 # OUTPUTS:
 #   - outputs/carbon_stocks/carbon_stocks_by_stratum_kriging.csv
@@ -111,7 +111,7 @@ load_stock_rasters <- function(method) {
     stock_pattern <- "stock_[0-9]+cm\\.tif"
     se_pattern <- "stock_se_[0-9]+cm\\.tif"
   } else if (method == "rf") {
-    stock_dir <- "outputs/predictions/rf"
+    stock_dir <- "outputs/predictions/stocks"
     stock_pattern <- "stock_rf_[0-9]+cm\\.tif"
     se_pattern <- "stock_rf_se_[0-9]+cm\\.tif"
   } else {
