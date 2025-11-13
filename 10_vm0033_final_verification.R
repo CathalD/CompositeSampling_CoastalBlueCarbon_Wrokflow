@@ -62,14 +62,16 @@ dir.create("outputs/verification/spatial_exports", recursive = TRUE, showWarning
 log_message("Loading temporal analysis results...")
 
 # Check if Module 09 outputs exist
-additionality_file <- "outputs/additionality/additionality_by_stratum.csv"
-temporal_trends_file <- "outputs/temporal_change/temporal_trends_by_stratum.csv"
+additionality_file <- "outputs/additionality/additionality_all_scenarios.csv"
 metadata_file <- "data_temporal/temporal_metadata.csv"
 
 missing_files <- c()
 if (!file.exists(additionality_file)) missing_files <- c(missing_files, additionality_file)
-if (!file.exists(temporal_trends_file)) missing_files <- c(missing_files, temporal_trends_file)
 if (!file.exists(metadata_file)) missing_files <- c(missing_files, metadata_file)
+
+# Temporal trends is optional
+temporal_trends_file <- "outputs/temporal_change/temporal_trends_by_stratum.csv"
+has_temporal_trends <- file.exists(temporal_trends_file)
 
 if (length(missing_files) > 0) {
   stop(sprintf("Missing required files:\n  - %s\n\nPlease run Modules 08 and 09 first.",
@@ -78,11 +80,17 @@ if (length(missing_files) > 0) {
 
 # Load data
 additionality <- read_csv(additionality_file, show_col_types = FALSE)
-temporal_trends <- read_csv(temporal_trends_file, show_col_types = FALSE)
 metadata <- read_csv(metadata_file, show_col_types = FALSE)
 
-log_message(sprintf("Loaded additionality data for %d strata", nrow(additionality)))
-log_message(sprintf("Loaded temporal trends for %d strata/scenarios", nrow(temporal_trends)))
+log_message(sprintf("Loaded additionality data: %d rows", nrow(additionality)))
+
+if (has_temporal_trends) {
+  temporal_trends <- read_csv(temporal_trends_file, show_col_types = FALSE)
+  log_message(sprintf("Loaded temporal trends for %d strata/scenarios", nrow(temporal_trends)))
+} else {
+  temporal_trends <- NULL
+  log_message("No temporal trends data available (single time point)", "INFO")
+}
 
 # ============================================================================
 # CARBON TO CO2e CONVERSION
