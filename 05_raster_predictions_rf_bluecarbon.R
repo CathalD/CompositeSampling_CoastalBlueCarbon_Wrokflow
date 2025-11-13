@@ -1123,7 +1123,7 @@ if (nrow(cv_results_all) > 0) {
   cat("----------------------------------------\n")
   
   for (i in 1:nrow(cv_results_all)) {
-    cat(sprintf("Depth %d cm: RMSE=%.2f, R²=%.3f (n=%d)\n",
+    cat(sprintf("Depth %.1f cm: RMSE=%.2f, R²=%.3f (n=%d)\n",
                 cv_results_all$depth_cm[i],
                 cv_results_all$cv_rmse[i],
                 cv_results_all$cv_r2[i],
