@@ -61,13 +61,13 @@ dir.create("diagnostics/crossvalidation", recursive = TRUE, showWarnings = FALSE
 # LOAD HARMONIZED DATA
 # ============================================================================
 
-log_message("Loading harmonized spline data...")
+log_message("Loading harmonized data...")
 
-if (!file.exists("data_processed/cores_harmonized_spline_bluecarbon.rds")) {
+if (!file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
   stop("Harmonized data not found. Run Module 03 first.")
 }
 
-cores_harmonized <- readRDS("data_processed/cores_harmonized_spline_bluecarbon.rds")
+cores_harmonized <- readRDS("data_processed/cores_harmonized_bluecarbon.rds")
 
 # Filter to standard depths and valid QA
 cores_standard <- cores_harmonized %>%
@@ -76,6 +76,123 @@ cores_standard <- cores_harmonized %>%
 
 log_message(sprintf("Loaded: %d predictions from %d cores",
                     nrow(cores_standard), n_distinct(cores_standard$core_id)))
+
+# Load harmonization metadata
+harmonization_metadata <- NULL
+if (file.exists("data_processed/harmonization_metadata.rds")) {
+  harmonization_metadata <- readRDS("data_processed/harmonization_metadata.rds")
+  log_message(sprintf("Harmonization method: %s", harmonization_metadata$method))
+}
+
+# Load Module 01 QA data
+vm0033_compliance <- NULL
+if (file.exists("data_processed/vm0033_compliance.rds")) {
+  vm0033_compliance <- readRDS("data_processed/vm0033_compliance.rds")
+  log_message("Loaded VM0033 compliance data")
+}
+
+# Standardize core type names if present
+if ("core_type" %in% names(cores_standard) || "core_type_clean" %in% names(cores_standard)) {
+  if (!"core_type_clean" %in% names(cores_standard)) {
+    cores_standard <- cores_standard %>%
+      mutate(
+        core_type_clean = case_when(
+          tolower(core_type) %in% c("hr", "high-res", "high resolution", "high res") ~ "HR",
+          tolower(core_type) %in% c("paired composite", "paired comp", "paired") ~ "Paired Composite",
+          tolower(core_type) %in% c("unpaired composite", "unpaired comp", "unpaired", "composite", "comp") ~ "Unpaired Composite",
+          TRUE ~ ifelse(is.na(core_type), "Unknown", core_type)
+        )
+      )
+  }
+
+  log_message("Core type distribution:")
+  core_type_summary <- cores_standard %>%
+    distinct(core_id, core_type_clean) %>%
+    count(core_type_clean)
+  for (i in 1:nrow(core_type_summary)) {
+    log_message(sprintf("  %s: %d cores",
+                       core_type_summary$core_type_clean[i],
+                       core_type_summary$n[i]))
+  }
+}
+
+# ============================================================================
+# CREATE STRATUM RASTER FROM GEE MASKS
+# ============================================================================
+
+log_message("Creating stratum raster covariate from GEE masks...")
+
+stratum_raster <- NULL
+gee_strata_dir <- "data_raw/gee_strata"
+
+if (dir.exists(gee_strata_dir)) {
+
+  # Expected GEE export file patterns and their numeric codes
+  stratum_mapping <- data.frame(
+    stratum_name = c("Upper Marsh", "Mid Marsh", "Lower Marsh", "Underwater Vegetation", "Open Water"),
+    file_name = c("upper_marsh.tif", "mid_marsh.tif", "lower_marsh.tif", "underwater_vegetation.tif", "open_water.tif"),
+    stratum_code = 1:5
+  )
+
+  stratum_layers <- list()
+
+  for (i in 1:nrow(stratum_mapping)) {
+    file_path <- file.path(gee_strata_dir, stratum_mapping$file_name[i])
+
+    if (file.exists(file_path)) {
+      mask_rast <- tryCatch({
+        r <- rast(file_path)
+
+        # Set to stratum code where mask = 1, NA elsewhere
+        r[r == 0] <- NA
+        r[r == 1] <- stratum_mapping$stratum_code[i]
+
+        r
+      }, error = function(e) {
+        log_message(sprintf("  Failed to load %s: %s",
+                           stratum_mapping$stratum_name[i], e$message), "WARNING")
+        NULL
+      })
+
+      if (!is.null(mask_rast)) {
+        stratum_layers[[stratum_mapping$stratum_name[i]]] <- mask_rast
+        log_message(sprintf("  Loaded: %s (code %d)",
+                           stratum_mapping$stratum_name[i],
+                           stratum_mapping$stratum_code[i]))
+      }
+    }
+  }
+
+  if (length(stratum_layers) > 0) {
+    # Mosaic all stratum layers into single raster
+    # Where they overlap, last one wins (shouldn't overlap in practice)
+    stratum_raster <- do.call(mosaic, c(stratum_layers, list(fun = "max")))
+
+    # Make categorical
+    stratum_raster <- as.factor(stratum_raster)
+
+    # Set category labels
+    active_codes <- sort(unique(values(stratum_raster, na.rm = TRUE)))
+    labels_df <- data.frame(
+      value = active_codes,
+      label = stratum_mapping$stratum_name[match(active_codes, stratum_mapping$stratum_code)]
+    )
+    levels(stratum_raster) <- labels_df
+
+    log_message(sprintf("Created stratum raster with %d categories", length(active_codes)))
+
+    # Save for later use
+    dir.create("data_processed", recursive = TRUE, showWarnings = FALSE)
+    writeRaster(stratum_raster, "data_processed/stratum_raster.tif", overwrite = TRUE)
+    log_message("Saved stratum raster to data_processed/stratum_raster.tif")
+
+  } else {
+    log_message("No GEE stratum masks found - RF will not use stratum information", "WARNING")
+  }
+} else {
+  log_message(sprintf("GEE strata directory not found: %s", gee_strata_dir), "WARNING")
+  log_message("RF will proceed without stratum covariate", "WARNING")
+}
 
 # ============================================================================
 # LOAD COVARIATES
@@ -137,6 +254,25 @@ for (i in 1:nlyr(covariate_stack)) {
     log_message(sprintf("WARNING: %s has only %.1f%% valid data", 
                        names(covariate_stack)[i], pct_valid), "WARNING")
   }
+}
+
+# Add stratum raster to covariate stack if available
+if (!is.null(stratum_raster)) {
+  log_message("Adding stratum raster to covariate stack...")
+
+  # Resample stratum raster to match covariate stack resolution and extent
+  stratum_resampled <- resample(stratum_raster, covariate_stack[[1]], method = "near")
+
+  # Add to stack
+  covariate_stack <- c(covariate_stack, stratum_resampled)
+  names(covariate_stack)[nlyr(covariate_stack)] <- "stratum"
+
+  # Update covariate names
+  covariate_names <- c(covariate_names, "stratum")
+
+  log_message(sprintf("Added stratum covariate (total: %d covariates)", nlyr(covariate_stack)))
+} else {
+  log_message("Stratum raster not available - proceeding without stratum covariate", "WARNING")
 }
 
 # ============================================================================
@@ -275,7 +411,7 @@ cv_results_all <- data.frame()
 
 for (depth in STANDARD_DEPTHS) {
   
-  log_message(sprintf("\n=== Processing depth: %d cm ===", depth))
+  log_message(sprintf("\n=== Processing depth: %.1f cm ===", depth))
   
   # Filter to this depth
   depth_data <- training_data %>%
@@ -293,7 +429,7 @@ for (depth in STANDARD_DEPTHS) {
                       n_distinct(depth_data$stratum)))
   
   # Prepare predictors
-  response <- depth_data$soc_spline
+  response <- depth_data$soc_harmonized
   
   # Predictors WITHOUT stratum (for spatial prediction)
   predictors_no_stratum <- depth_data %>%
@@ -466,7 +602,7 @@ for (depth in STANDARD_DEPTHS) {
   
   # Save prediction
   pred_file <- file.path("outputs/predictions/rf",
-                        sprintf("soc_rf_%dcm.tif", depth))
+                        sprintf("soc_rf_%.0fcm.tif", depth))
   writeRaster(pred_raster, pred_file, overwrite = TRUE)
   
   log_message(sprintf("  Saved: %s", basename(pred_file)))
@@ -487,12 +623,12 @@ for (depth in STANDARD_DEPTHS) {
       
       # Save AOA
       aoa_file <- file.path("outputs/predictions/rf",
-                           sprintf("aoa_%dcm.tif", depth))
+                           sprintf("aoa_%.0fcm.tif", depth))
       writeRaster(aoa_result$AOA, aoa_file, overwrite = TRUE)
-      
+
       # Save DI
       di_file <- file.path("outputs/predictions/rf",
-                          sprintf("di_%dcm.tif", depth))
+                          sprintf("di_%.0fcm.tif", depth))
       writeRaster(aoa_result$DI, di_file, overwrite = TRUE)
       
       log_message("  AOA calculated and saved")
