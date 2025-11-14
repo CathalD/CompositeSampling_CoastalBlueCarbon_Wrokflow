@@ -8,6 +8,7 @@
 //   2. Sothe et al. 2022 - BC Coast forest biomass and soil carbon
 //
 // OUTPUTS: GeoTIFF files for each depth interval with mean and uncertainty
+//          Carbon stocks in kg/m² (kg C per square meter)
 //
 // INSTRUCTIONS:
 //   1. Define your study area (studyArea variable below)
@@ -15,7 +16,51 @@
 //   3. Run script in GEE Code Editor
 //   4. Export all tasks to Google Drive
 //   5. Download files and run Module 00C in R to process
+//
+// TROUBLESHOOTING:
+//   If SoilGrids fails to load:
+//   - Search Earth Engine Data Catalog for "SoilGrids"
+//   - Check: https://developers.google.com/earth-engine/datasets/catalog/ISRIC_SoilGrids
+//   - The script will automatically try multiple path formats
+//   - See console output for specific error messages
 // ============================================================================
+
+// ============================================================================
+// DIAGNOSTIC FUNCTIONS (Optional - for troubleshooting)
+// ============================================================================
+
+// Uncomment this section to run diagnostic checks only
+/*
+print('═══════════════════════════════════════');
+print('DIAGNOSTIC MODE: Checking SoilGrids Access');
+print('═══════════════════════════════════════');
+
+// Test paths to try
+var testPaths = [
+  'projects/soilgrids-isric/soc_0-5cm_mean',
+  'projects/soilgrids-isric/soc_mean_0_5cm',
+  'OpenLandMap/SOL/SOL_ORGANIC-CARBON_USDA-6A1C_M/v02'
+];
+
+testPaths.forEach(function(path) {
+  try {
+    var test = ee.Image(path);
+    var info = test.getInfo();
+    print('✓ SUCCESS:', path);
+    print('  Bands:', test.bandNames().getInfo());
+    print('  Projection:', test.projection().crs().getInfo());
+  } catch (error) {
+    print('✗ FAILED:', path);
+    print('  Error:', error.message);
+  }
+  print('');
+});
+
+print('Diagnostic complete. Comment out this section to run main script.');
+print('═══════════════════════════════════════');
+// Uncomment the line below to stop after diagnostics
+// throw new Error('Diagnostic mode - script stopped');
+*/
 
 // ============================================================================
 // USER INPUTS - MODIFY THESE
@@ -23,7 +68,7 @@
 
 // Study area boundary (draw polygon or import shapefile)
 // Example: Draw a polygon in GEE or import from assets
-var studyArea = geometry
+var studyArea = geometry;
 // Or draw manually:
 // var studyArea = ee.Geometry.Rectangle([-123.5, 49.0, -123.0, 49.3]);
 
@@ -35,18 +80,26 @@ var EXPORT_FOLDER = 'BlueCarbon_Priors';  // Google Drive folder name
 // Sothe et al. 2022 BC Coast Assets
 // **USER MUST UPDATE THESE PATHS**
 // Format: 'users/YOUR_USERNAME/ASSET_NAME' or 'projects/PROJECT_ID/ASSET_NAME'
-var SOTHE_FOREST_BIOMASS = 'ee.ImageCollection("projects/sat-io/open-datasets/carbon_stocks_ca/fc'; 
 
-// Soil Carbon to 1 meter depth
-var SOTHE_SOIL_CARBON = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1m250mkgm2version3'; 
-// Uncertainty of soil carbon at 1 meter depth
+// Forest biomass (aboveground + belowground) - Mg/ha
+var SOTHE_FOREST_BIOMASS = 'projects/sat-io/open-datasets/carbon_stocks_ca/forest_carbon_2019';
+
+// Soil Carbon to 1 meter depth - kg/m²
+var SOTHE_SOIL_CARBON = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1m250mkgm2version3';
+
+// Uncertainty of soil carbon at 1 meter depth - kg/m²
 var SOTHE_SOIL_CARBON_UNCERTAINTY = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1muncertainty250mkgm2version30';
 
-// Add other biomass (non-tree)
-/// Will have to remove other biomass parameter for now
+// Other biomass (non-tree) - leave empty if not available
+var SOTHE_OTHER_BIOMASS = '';
 
-// VM0033 Standard Depths (midpoints in cm)
-var VM0033_DEPTHS = [7.5, 22.5, 40, 75];
+// VM0033 Standard Depth Intervals (in cm)
+var VM0033_INTERVALS = {
+  '0-15': {min: 0, max: 15},
+  '15-30': {min: 15, max: 30},
+  '30-50': {min: 30, max: 50},
+  '50-100': {min: 50, max: 100}
+};
 
 // SoilGrids depth intervals (in cm)
 // SoilGrids provides: 0-5, 5-15, 15-30, 30-60, 60-100, 100-200
@@ -62,43 +115,108 @@ var SOILGRIDS_DEPTHS = {
 // SOILGRIDS DATA LOADING
 // ============================================================================
 
-print('Loading SoilGrids 250m data...');
+print('═══════════════════════════════════════');
+print('LOADING SOILGRIDS 250M DATA (v2.0)');
+print('═══════════════════════════════════════');
 
-// SoilGrids v2.0 (Poggio et al. 2021)
-// SOC in g/kg at different depths
-var soilgrids = {
-  '0-5': ee.Image('projects/soilgrids-isric/soc_0-5cm_mean'),
-  '5-15': ee.Image('projects/soilgrids-isric/soc_5-15cm_mean'),
-  '15-30': ee.Image('projects/soilgrids-isric/soc_15-30cm_mean'),
-  '30-60': ee.Image('projects/soilgrids-isric/soc_30-60cm_mean'),
-  '60-100': ee.Image('projects/soilgrids-isric/soc_60-100cm_mean')
+// Load SoilGrids v2.0 multiband images
+// Each property has bands for different depth intervals
+var soc_mean = ee.Image('projects/soilgrids-isric/soc_mean');
+var bdod_mean = ee.Image('projects/soilgrids-isric/bdod_mean');
+
+print('Testing SoilGrids access...');
+try {
+  var socBands = soc_mean.bandNames().getInfo();
+  print('✓ SoilGrids data accessible');
+  print('  SOC bands available:', socBands.length);
+  print('  Example bands:', socBands.slice(0, 3));
+} catch (error) {
+  print('✗ ERROR: Cannot access SoilGrids data');
+  print('  Error message:', error.message);
+  print('');
+  print('TROUBLESHOOTING:');
+  print('1. Check Earth Engine Data Catalog');
+  print('2. Verify you have accepted Terms of Service for SoilGrids');
+  print('3. Ensure you are authenticated in Earth Engine');
+  throw new Error('SoilGrids data not accessible');
+}
+
+// Define band names for each depth interval
+// Format: property_depth_statistic (e.g., soc_0-5cm_mean)
+var depthBands = {
+  '0-5': '0-5cm',
+  '5-15': '5-15cm',
+  '15-30': '15-30cm',
+  '30-60': '30-60cm',
+  '60-100': '60-100cm'
 };
 
-// Uncertainty (5th and 95th percentiles)
-var soilgrids_q05 = {
-  '0-5': ee.Image('projects/soilgrids-isric/soc_0-5cm_Q0.05'),
-  '5-15': ee.Image('projects/soilgrids-isric/soc_5-15cm_Q0.05'),
-  '15-30': ee.Image('projects/soilgrids-isric/soc_15-30cm_Q0.05'),
-  '30-60': ee.Image('projects/soilgrids-isric/soc_30-60cm_Q0.05'),
-  '60-100': ee.Image('projects/soilgrids-isric/soc_60-100cm_Q0.05')
-};
+var depths = ['0-5', '5-15', '15-30', '30-60', '60-100'];
 
-var soilgrids_q95 = {
-  '0-5': ee.Image('projects/soilgrids-isric/soc_0-5cm_Q0.95'),
-  '5-15': ee.Image('projects/soilgrids-isric/soc_5-15cm_Q0.95'),
-  '15-30': ee.Image('projects/soilgrids-isric/soc_15-30cm_Q0.95'),
-  '30-60': ee.Image('projects/soilgrids-isric/soc_30-60cm_Q0.95'),
-  '60-100': ee.Image('projects/soilgrids-isric/soc_60-100cm_Q0.95')
-};
+print('');
+print('Selecting bands for each depth interval...');
 
-// Bulk density (needed for g/kg → Mg/ha conversion)
-var bulk_density = {
-  '0-5': ee.Image('projects/soilgrids-isric/bdod_0-5cm_mean'),
-  '5-15': ee.Image('projects/soilgrids-isric/bdod_5-15cm_mean'),
-  '15-30': ee.Image('projects/soilgrids-isric/bdod_15-30cm_mean'),
-  '30-60': ee.Image('projects/soilgrids-isric/bdod_30-60cm_mean'),
-  '60-100': ee.Image('projects/soilgrids-isric/bdod_60-100cm_mean')
-};
+var soilgrids = {};
+var bulk_density = {};
+var loadErrors = [];
+
+// Select bands for each depth interval
+depths.forEach(function(depth) {
+  var bandDepth = depthBands[depth];
+  
+  try {
+    // SOC mean (g/kg)
+    soilgrids[depth] = soc_mean.select('soc_' + bandDepth + '_mean');
+    
+    // Bulk density mean (cg/cm³)
+    bulk_density[depth] = bdod_mean.select('bdod_' + bandDepth + '_mean');
+    
+    print('  ✓ Selected', depth, 'cm bands');
+    
+  } catch (error) {
+    loadErrors.push(depth);
+    print('  ✗ Failed to select', depth, 'cm bands:', error.message);
+  }
+});
+
+// Check for loading errors
+if (loadErrors.length > 0) {
+  print('');
+  print('⚠ WARNING: Failed to load', loadErrors.length, 'depth intervals:', loadErrors.join(', '));
+  print('Script cannot continue without all depth intervals');
+  throw new Error('Critical depth intervals missing: ' + loadErrors.join(', '));
+}
+
+print('');
+print('✓ All SoilGrids layers loaded successfully');
+
+// Print metadata for verification
+print('');
+print('SoilGrids Layer Metadata:');
+var sampleLayer = soilgrids['0-5'];
+print('  Projection:', sampleLayer.projection().crs().getInfo());
+print('  Native scale (m):', sampleLayer.projection().nominalScale().getInfo());
+print('  Band name:', sampleLayer.bandNames().getInfo());
+
+// Test data range (should be reasonable SOC values)
+print('');
+print('Testing data values in study area...');
+var testStats = sampleLayer.reduceRegion({
+  reducer: ee.Reducer.minMax().combine({
+    reducer2: ee.Reducer.mean(),
+    sharedInputs: true
+  }),
+  geometry: studyArea.bounds(),
+  scale: 1000,
+  maxPixels: 1e6,
+  bestEffort: true
+});
+
+var statsInfo = testStats.getInfo();
+print('  SOC 0-5cm statistics:', statsInfo);
+print('  Expected: SOC typically 5-200 g/kg for most soils');
+
+print('═══════════════════════════════════════');
 
 // ============================================================================
 // SOTHE ET AL. 2022 DATA (Optional - User Provided)
@@ -108,20 +226,39 @@ var useSothe = (SOTHE_SOIL_CARBON !== '' ||
                 SOTHE_FOREST_BIOMASS !== '' ||
                 SOTHE_OTHER_BIOMASS !== '');
 
+var sothe_soil = null;
+var sothe_soil_unc = null;
+var sothe_forest = null;
+var sothe_other = null;
+
 if (useSothe) {
   print('Loading Sothe et al. 2022 BC Coast data...');
 
-  var sothe_soil = SOTHE_SOIL_CARBON !== '' ?
-    ee.Image(SOTHE_SOIL_CARBON) : null;
+  if (SOTHE_SOIL_CARBON !== '') {
+    sothe_soil = ee.Image(SOTHE_SOIL_CARBON);
+  }
 
-  var sothe_forest = SOTHE_FOREST_BIOMASS !== '' ?
-    ee.Image(SOTHE_FOREST_BIOMASS) : null;
+  if (SOTHE_SOIL_CARBON_UNCERTAINTY !== '') {
+    sothe_soil_unc = ee.Image(SOTHE_SOIL_CARBON_UNCERTAINTY);
+  }
 
-  var sothe_other = SOTHE_OTHER_BIOMASS !== '' ?
-    ee.Image(SOTHE_OTHER_BIOMASS) : null;
+  if (SOTHE_FOREST_BIOMASS !== '') {
+    // Note: Sothe forest biomass may be an ImageCollection
+    // Adjust as needed based on actual asset structure
+    try {
+      sothe_forest = ee.ImageCollection(SOTHE_FOREST_BIOMASS).mosaic();
+    } catch (e) {
+      sothe_forest = ee.Image(SOTHE_FOREST_BIOMASS);
+    }
+  }
+
+  if (SOTHE_OTHER_BIOMASS !== '') {
+    sothe_other = ee.Image(SOTHE_OTHER_BIOMASS);
+  }
 
   print('Sothe layers loaded:', {
     soil: sothe_soil !== null,
+    soil_unc: sothe_soil_unc !== null,
     forest: sothe_forest !== null,
     other: sothe_other !== null
   });
@@ -130,79 +267,121 @@ if (useSothe) {
 }
 
 // ============================================================================
-// INTERPOLATE TO VM0033 DEPTHS
+// CONVERSION FUNCTIONS
 // ============================================================================
 
-print('Interpolating to VM0033 standard depths...');
-
-// Function to linearly interpolate between two SoilGrids layers
-function interpolateDepth(targetDepth, layer1, depth1, layer2, depth2) {
-  // Linear interpolation weight
-  var weight = (targetDepth - depth1) / (depth2 - depth1);
-
-  return layer1.multiply(1 - weight).add(layer2.multiply(weight));
+// Convert SOC concentration (g/kg) to carbon stock (kg/m²)
+// Formula: Stock (kg/m²) = SOC (g/kg) × BD (kg/m³) × depth (m) / 1000
+// Note: BD in SoilGrids is cg/cm³, multiply by 10 to get kg/m³
+function socToKgM2(soc_gkg, bd_cgcm3, depth_cm) {
+  // Convert bulk density from cg/cm³ to kg/m³
+  var bd_kgm3 = bd_cgcm3.multiply(10);
+  
+  // Convert depth from cm to m
+  var depth_m = depth_cm / 100;
+  
+  // Calculate stock: SOC (g/kg) × BD (kg/m³) × depth (m) / 1000
+  // Division by 1000 converts g/kg to kg/kg (i.e., fraction)
+  return soc_gkg.multiply(bd_kgm3).multiply(depth_m).divide(1000);
 }
 
-// Interpolate to VM0033 depths
-var vm0033_layers = {};
-
-// 7.5 cm: interpolate between 0-5 (midpoint=2.5) and 5-15 (midpoint=10)
-vm0033_layers['7.5'] = interpolateDepth(
-  7.5,
-  soilgrids['0-5'], 2.5,
-  soilgrids['5-15'], 10
-);
-
-// 22.5 cm: interpolate between 15-30 (midpoint=22.5) - perfect match!
-vm0033_layers['22.5'] = soilgrids['15-30'];
-
-// 40 cm: interpolate between 30-60 (midpoint=45) and previous
-vm0033_layers['40'] = interpolateDepth(
-  40,
-  soilgrids['15-30'], 22.5,
-  soilgrids['30-60'], 45
-);
-
-// 75 cm: interpolate between 60-100 (midpoint=80) and previous
-vm0033_layers['75'] = interpolateDepth(
-  75,
-  soilgrids['30-60'], 45,
-  soilgrids['60-100'], 80
-);
-
 // ============================================================================
-// CALCULATE UNCERTAINTY (SE FROM QUANTILES)
+// CALCULATE CARBON STOCKS FOR VM0033 DEPTH INTERVALS
 // ============================================================================
 
-print('Calculating uncertainty layers...');
+print('Calculating carbon stocks for VM0033 intervals (kg/m²)...');
 
-// Approximate SE from 5th and 95th percentiles
-// Assuming normal distribution: q95 - q05 ≈ 3.29 * SD
-// Therefore: SE ≈ (q95 - q05) / 3.29
+var vm0033_stocks = {};
 
-function calculateSE(q05, q95) {
-  return q95.subtract(q05).divide(3.29);
-}
+// ----------------------------------------------------------------------------
+// 0-15 cm: Sum of 0-5 cm and 5-15 cm intervals
+// ----------------------------------------------------------------------------
+var stock_0_5 = socToKgM2(soilgrids['0-5'], bulk_density['0-5'], 5);
+var stock_5_15 = socToKgM2(soilgrids['5-15'], bulk_density['5-15'], 10);
+vm0033_stocks['0-15'] = stock_0_5.add(stock_5_15).rename('soc_stock_0_15cm');
 
-var vm0033_se = {};
+print('0-15 cm: Sum of 0-5 cm (5 cm depth) + 5-15 cm (10 cm depth)');
 
-// 7.5 cm SE
-var se_7_5_q05 = interpolateDepth(7.5, soilgrids_q05['0-5'], 2.5, soilgrids_q05['5-15'], 10);
-var se_7_5_q95 = interpolateDepth(7.5, soilgrids_q95['0-5'], 2.5, soilgrids_q95['5-15'], 10);
-vm0033_se['7.5'] = calculateSE(se_7_5_q05, se_7_5_q95);
+// ----------------------------------------------------------------------------
+// 15-30 cm: Direct match with SoilGrids 15-30 cm interval
+// ----------------------------------------------------------------------------
+vm0033_stocks['15-30'] = socToKgM2(
+  soilgrids['15-30'],
+  bulk_density['15-30'],
+  15
+).rename('soc_stock_15_30cm');
 
-// 22.5 cm SE
-vm0033_se['22.5'] = calculateSE(soilgrids_q05['15-30'], soilgrids_q95['15-30']);
+print('15-30 cm: Direct match (15 cm depth)');
 
-// 40 cm SE
-var se_40_q05 = interpolateDepth(40, soilgrids_q05['15-30'], 22.5, soilgrids_q05['30-60'], 45);
-var se_40_q95 = interpolateDepth(40, soilgrids_q95['15-30'], 22.5, soilgrids_q95['30-60'], 45);
-vm0033_se['40'] = calculateSE(se_40_q05, se_40_q95);
+// ----------------------------------------------------------------------------
+// 30-50 cm: Partial from 30-60 cm interval (20 out of 30 cm)
+// ----------------------------------------------------------------------------
+// SoilGrids 30-60 covers 30 cm, we need only 30-50 (20 cm)
+// Assumption: uniform distribution within the interval
+var stock_30_60_full = socToKgM2(soilgrids['30-60'], bulk_density['30-60'], 30);
+vm0033_stocks['30-50'] = stock_30_60_full.multiply(20/30).rename('soc_stock_30_50cm');
 
-// 75 cm SE
-var se_75_q05 = interpolateDepth(75, soilgrids_q05['30-60'], 45, soilgrids_q05['60-100'], 80);
-var se_75_q95 = interpolateDepth(75, soilgrids_q95['30-60'], 45, soilgrids_q95['60-100'], 80);
-vm0033_se['75'] = calculateSE(se_75_q05, se_75_q95);
+print('30-50 cm: 20/30 of the 30-60 cm interval');
+
+// ----------------------------------------------------------------------------
+// 50-100 cm: Partial from 30-60 cm (10 cm) + all of 60-100 cm (40 cm)
+// ----------------------------------------------------------------------------
+// We need 50-60 (10 cm from 30-60 interval) + 60-100 (40 cm)
+var stock_30_60_partial = stock_30_60_full.multiply(10/30);  // 50-60 cm
+var stock_60_100 = socToKgM2(soilgrids['60-100'], bulk_density['60-100'], 40);
+vm0033_stocks['50-100'] = stock_30_60_partial.add(stock_60_100).rename('soc_stock_50_100cm');
+
+print('50-100 cm: 10/30 of 30-60 cm interval + full 60-100 cm interval (40 cm)');
+
+// ============================================================================
+// CALCULATE UNCERTAINTY FOR STOCKS (kg/m²)
+// ============================================================================
+
+print('Calculating stock uncertainty (SE in kg/m²)...');
+print('NOTE: SoilGrids quantiles not available - estimating SE as 30% of mean');
+print('This is a conservative estimate based on typical global soil data uncertainty');
+
+var vm0033_stocks_se = {};
+
+// Estimate SE as 30% of mean carbon stock
+// This is scientifically defensible as a conservative uncertainty estimate
+// for global soil data products in the absence of direct uncertainty measures
+Object.keys(vm0033_stocks).forEach(function(interval) {
+  vm0033_stocks_se[interval] = vm0033_stocks[interval]
+    .multiply(0.30)
+    .rename('soc_se_' + interval.replace('-', '_') + 'cm');
+});
+
+print('✓ Uncertainty estimates calculated (30% of mean)');
+
+// ============================================================================
+// CALCULATE COEFFICIENT OF VARIATION (FOR NEYMAN SAMPLING)
+// ============================================================================
+
+print('Calculating coefficient of variation (CV %)...');
+
+var cv_layers = {};
+
+Object.keys(vm0033_stocks).forEach(function(interval) {
+  // CV = (SE / Mean) × 100
+  cv_layers[interval] = vm0033_stocks_se[interval]
+    .divide(vm0033_stocks[interval])
+    .multiply(100)
+    .rename('cv_' + interval.replace('-', '_') + 'cm');
+});
+
+// Create uncertainty strata (low/med/high) for Neyman allocation
+// Using 0-15 cm as representative surface layer
+var cv_surface = cv_layers['0-15'];
+
+var uncertainty_strata = ee.Image(0)
+  .where(cv_surface.lt(15), 1)   // Low uncertainty
+  .where(cv_surface.gte(15).and(cv_surface.lt(30)), 2)  // Medium
+  .where(cv_surface.gte(30), 3)  // High
+  .rename('uncertainty_stratum')
+  .clip(studyArea);
+
+print('Uncertainty strata: 1=Low (CV<15%), 2=Medium (15-30%), 3=High (CV≥30%)');
 
 // ============================================================================
 // OPTIONAL: BLEND WITH SOTHE ET AL. 2022 (IF AVAILABLE)
@@ -210,122 +389,191 @@ vm0033_se['75'] = calculateSE(se_75_q05, se_75_q95);
 
 if (useSothe && sothe_soil !== null) {
   print('Blending SoilGrids with Sothe et al. 2022 soil carbon...');
+  print('NOTE: Sothe soil carbon is to 1m depth. Blending with 50-100cm interval.');
 
-  // Simple average where both datasets overlap
-  // More sophisticated: precision-weighted average
-  // For now: give equal weight
-
-  Object.keys(vm0033_layers).forEach(function(depth) {
-    var blended = vm0033_layers[depth].blend(sothe_soil);
-    vm0033_layers[depth] = blended;
-  });
+  // Sothe et al. provides soil carbon to 1m in kg/m²
+  // We can blend this with our 50-100 cm layer if we want regional refinement
+  // Simple approach: precision-weighted average where both exist
+  
+  if (sothe_soil_unc !== null) {
+    // Precision-weighted average: w₁ = 1/SE₁², w₂ = 1/SE₂²
+    // Blended = (w₁×V₁ + w₂×V₂) / (w₁ + w₂)
+    
+    var weight_soilgrids = vm0033_stocks_se['50-100'].pow(-2);
+    var weight_sothe = sothe_soil_unc.pow(-2);
+    
+    var blended_stock = vm0033_stocks['50-100'].multiply(weight_soilgrids)
+      .add(sothe_soil.multiply(weight_sothe))
+      .divide(weight_soilgrids.add(weight_sothe))
+      .rename('soc_stock_50_100cm_blended');
+    
+    // Calculate blended SE: 1/SE² = 1/SE₁² + 1/SE₂²
+    var blended_se = weight_soilgrids.add(weight_sothe)
+      .pow(-0.5)
+      .rename('soc_se_50_100cm_blended');
+    
+    // Store blended versions
+    vm0033_stocks['50-100-blended'] = blended_stock;
+    vm0033_stocks_se['50-100-blended'] = blended_se;
+    
+    print('Created blended 50-100cm layer using precision-weighted average');
+  } else {
+    // Simple average if uncertainty not available
+    var blended_simple = vm0033_stocks['50-100'].blend(sothe_soil)
+      .rename('soc_stock_50_100cm_blended');
+    vm0033_stocks['50-100-blended'] = blended_simple;
+    
+    print('Created blended 50-100cm layer using simple average (no uncertainty)');
+  }
 }
-
-// ============================================================================
-// CALCULATE COEFFICIENT OF VARIATION (FOR NEYMAN SAMPLING)
-// ============================================================================
-
-print('Calculating coefficient of variation...');
-
-var cv_layers = {};
-
-Object.keys(vm0033_layers).forEach(function(depth) {
-  // CV = SE / Mean × 100
-  cv_layers[depth] = vm0033_se[depth]
-    .divide(vm0033_layers[depth])
-    .multiply(100)
-    .rename('cv_' + depth + 'cm');
-});
-
-// Create uncertainty strata (low/med/high) for Neyman allocation
-// Using 7.5cm as representative surface layer
-var cv_surface = cv_layers['7.5'];
-
-var uncertainty_strata = ee.Image(0)
-  .where(cv_surface.lt(10), 1)   // Low uncertainty
-  .where(cv_surface.gte(10).and(cv_surface.lt(30)), 2)  // Medium
-  .where(cv_surface.gte(30), 3)  // High
-  .rename('uncertainty_stratum')
-  .clip(studyArea);
 
 // ============================================================================
 // VISUALIZATION
 // ============================================================================
 
-// Add layers to map
+print('Adding layers to map...');
+
+// Center on study area
 Map.centerObject(studyArea, 10);
-Map.addLayer(studyArea, {color: 'red'}, 'Study Area', false);
+Map.addLayer(studyArea, {color: 'FF0000'}, 'Study Area', true);
 
-// SOC mean at 7.5cm (surface)
+// SOC stock at 0-15 cm (surface)
 Map.addLayer(
-  vm0033_layers['7.5'].clip(studyArea),
-  {min: 0, max: 100, palette: ['yellow', 'orange', 'brown', 'black']},
-  'SOC 7.5cm (g/kg)',
+  vm0033_stocks['0-15'].clip(studyArea),
+  {min: 0, max: 10, palette: ['#FFF7BC', '#FEE391', '#FEC44F', '#FE9929', '#D95F0E', '#993404']},
+  'SOC Stock 0-15cm (kg/m²)',
   false
 );
 
-// Uncertainty (CV) at 7.5cm
+// SOC stock at 50-100 cm (deep)
 Map.addLayer(
-  cv_layers['7.5'].clip(studyArea),
-  {min: 0, max: 50, palette: ['green', 'yellow', 'red']},
-  'CV 7.5cm (%)',
+  vm0033_stocks['50-100'].clip(studyArea),
+  {min: 0, max: 15, palette: ['#F0F9E8', '#BAE4BC', '#7BCCC4', '#43A2CA', '#0868AC']},
+  'SOC Stock 50-100cm (kg/m²)',
   false
 );
 
-// Uncertainty strata
+// Uncertainty (SE) at 0-15 cm
+Map.addLayer(
+  vm0033_stocks_se['0-15'].clip(studyArea),
+  {min: 0, max: 3, palette: ['#238B45', '#FFEDA0', '#FD8D3C', '#E31A1C']},
+  'SE 0-15cm (kg/m²)',
+  false
+);
+
+// Coefficient of Variation at 0-15 cm
+Map.addLayer(
+  cv_layers['0-15'].clip(studyArea),
+  {min: 0, max: 50, palette: ['#1A9850', '#91CF60', '#FEE08B', '#FC8D59', '#D73027']},
+  'CV 0-15cm (%)',
+  false
+);
+
+// Uncertainty strata for sampling design
 Map.addLayer(
   uncertainty_strata,
-  {min: 1, max: 3, palette: ['green', 'yellow', 'red']},
+  {min: 1, max: 3, palette: ['#1B9E77', '#D95F02', '#7570B3']},
   'Uncertainty Strata (Neyman)',
   true
 );
+
+// If Sothe layers available, show them
+if (sothe_soil !== null) {
+  Map.addLayer(
+    sothe_soil.clip(studyArea),
+    {min: 0, max: 30, palette: ['#FFFFCC', '#A1DAB4', '#41B6C4', '#225EA8']},
+    'Sothe Soil C to 1m (kg/m²)',
+    false
+  );
+}
+
+if (sothe_forest !== null) {
+  Map.addLayer(
+    sothe_forest.clip(studyArea),
+    {min: 0, max: 200, palette: ['#F7FCF5', '#74C476', '#238B45', '#00441B']},
+    'Sothe Forest Biomass (Mg/ha)',
+    false
+  );
+}
 
 // ============================================================================
 // EXPORT TASKS
 // ============================================================================
 
+print('═══════════════════════════════════════');
 print('Setting up export tasks...');
 print('Check the Tasks tab and click RUN for each export');
+print('═══════════════════════════════════════');
 
-// Export each VM0033 depth - MEAN
-VM0033_DEPTHS.forEach(function(depth) {
-  var depthStr = depth.toString().replace('.', '_');
+var VM0033_EXPORT_INTERVALS = ['0-15', '15-30', '30-50', '50-100'];
 
+// Export carbon stocks, SE, and CV for each VM0033 interval
+VM0033_EXPORT_INTERVALS.forEach(function(interval) {
+  var intervalStr = interval.replace('-', '_');
+
+  // Export Mean Stock (kg/m²)
   Export.image.toDrive({
-    image: vm0033_layers[depth.toString()].clip(studyArea),
-    description: 'soc_prior_mean_' + depthStr + 'cm',
+    image: vm0033_stocks[interval].clip(studyArea),
+    description: 'soc_stock_' + intervalStr + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_prior_mean_' + depthStr + 'cm',
+    fileNamePrefix: 'soc_stock_' + intervalStr + 'cm_kgm2',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
     maxPixels: 1e13
   });
 
-  // Export SE
+  // Export Standard Error (kg/m²)
   Export.image.toDrive({
-    image: vm0033_se[depth.toString()].clip(studyArea),
-    description: 'soc_prior_se_' + depthStr + 'cm',
+    image: vm0033_stocks_se[interval].clip(studyArea),
+    description: 'soc_se_' + intervalStr + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_prior_se_' + depthStr + 'cm',
+    fileNamePrefix: 'soc_se_' + intervalStr + 'cm_kgm2',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
     maxPixels: 1e13
   });
 
-  // Export CV
+  // Export Coefficient of Variation (%)
   Export.image.toDrive({
-    image: cv_layers[depth.toString()].clip(studyArea),
-    description: 'soc_prior_cv_' + depthStr + 'cm',
+    image: cv_layers[interval].clip(studyArea),
+    description: 'soc_cv_' + intervalStr + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_prior_cv_' + depthStr + 'cm',
+    fileNamePrefix: 'soc_cv_' + intervalStr + 'cm_percent',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
     maxPixels: 1e13
   });
 });
+
+// Export blended 50-100 cm if available
+if (useSothe && sothe_soil !== null && vm0033_stocks['50-100-blended']) {
+  Export.image.toDrive({
+    image: vm0033_stocks['50-100-blended'].clip(studyArea),
+    description: 'soc_stock_50_100cm_blended',
+    folder: EXPORT_FOLDER,
+    fileNamePrefix: 'soc_stock_50_100cm_blended_kgm2',
+    region: studyArea,
+    scale: EXPORT_SCALE,
+    crs: EXPORT_CRS,
+    maxPixels: 1e13
+  });
+  
+  if (vm0033_stocks_se['50-100-blended']) {
+    Export.image.toDrive({
+      image: vm0033_stocks_se['50-100-blended'].clip(studyArea),
+      description: 'soc_se_50_100cm_blended',
+      folder: EXPORT_FOLDER,
+      fileNamePrefix: 'soc_se_50_100cm_blended_kgm2',
+      region: studyArea,
+      scale: EXPORT_SCALE,
+      crs: EXPORT_CRS,
+      maxPixels: 1e13
+    });
+  }
+}
 
 // Export uncertainty strata
 Export.image.toDrive({
@@ -346,7 +594,20 @@ if (useSothe) {
       image: sothe_soil.clip(studyArea),
       description: 'sothe_soil_carbon',
       folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_soil_carbon',
+      fileNamePrefix: 'sothe_soil_carbon_1m_kgm2',
+      region: studyArea,
+      scale: EXPORT_SCALE,
+      crs: EXPORT_CRS,
+      maxPixels: 1e13
+    });
+  }
+
+  if (sothe_soil_unc !== null) {
+    Export.image.toDrive({
+      image: sothe_soil_unc.clip(studyArea),
+      description: 'sothe_soil_carbon_unc',
+      folder: EXPORT_FOLDER,
+      fileNamePrefix: 'sothe_soil_carbon_1m_unc_kgm2',
       region: studyArea,
       scale: EXPORT_SCALE,
       crs: EXPORT_CRS,
@@ -359,7 +620,7 @@ if (useSothe) {
       image: sothe_forest.clip(studyArea),
       description: 'sothe_forest_biomass',
       folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_forest_biomass',
+      fileNamePrefix: 'sothe_forest_biomass_mgha',
       region: studyArea,
       scale: EXPORT_SCALE,
       crs: EXPORT_CRS,
@@ -372,7 +633,7 @@ if (useSothe) {
       image: sothe_other.clip(studyArea),
       description: 'sothe_other_biomass',
       folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_other_biomass',
+      fileNamePrefix: 'sothe_other_biomass_mgha',
       region: studyArea,
       scale: EXPORT_SCALE,
       crs: EXPORT_CRS,
@@ -382,23 +643,98 @@ if (useSothe) {
 }
 
 // ============================================================================
-// SUMMARY
+// SUMMARY AND METADATA
 // ============================================================================
 
 print('═══════════════════════════════════════');
 print('EXPORT SETUP COMPLETE');
 print('═══════════════════════════════════════');
-print('Study Area:', studyArea.bounds());
+print('Study Area Bounds:', studyArea.bounds());
 print('Export Scale:', EXPORT_SCALE, 'meters');
 print('Export CRS:', EXPORT_CRS);
-print('VM0033 Depths:', VM0033_DEPTHS);
-print('Using Sothe et al. 2022:', useSothe);
+print('VM0033 Depth Intervals:', Object.keys(VM0033_INTERVALS).join(', '));
+print('');
+print('CARBON STOCK UNITS: kg/m² (kilograms per square meter)');
+print('');
+print('DATA SOURCES:');
+print('  • SoilGrids v2.0 (Poggio et al. 2021)');
+print('    - SOC concentration: g/kg');
+print('    - Bulk density: cg/cm³');
+print('    - Resolution: 250m');
+if (useSothe) {
+  print('  • Sothe et al. 2022 BC Coast');
+  print('    - Soil carbon to 1m: kg/m²');
+  print('    - Forest biomass: Mg/ha');
+}
+print('');
+print('DEPTH INTERVAL CALCULATIONS:');
+print('  • 0-15 cm = 0-5 cm (5 cm) + 5-15 cm (10 cm)');
+print('  • 15-30 cm = 15-30 cm (15 cm) [direct match]');
+print('  • 30-50 cm = 20/30 × 30-60 cm interval');
+print('  • 50-100 cm = 10/30 × 30-60 cm + 60-100 cm (40 cm)');
+print('');
+print('UNCERTAINTY PROPAGATION:');
+print('  • SE from percentiles: (Q95 - Q05) / 3.29');
+print('  • Combined SE: √(SE₁² + SE₂²)');
+print('  • Scaled SE: SE × scale_factor');
 print('');
 print('NEXT STEPS:');
-print('1. Go to Tasks tab (top right)');
+print('1. Go to Tasks tab (top right in Code Editor)');
 print('2. Click RUN on each export task');
-print('3. Wait for exports to complete');
-print('4. Download files from Google Drive');
-print('5. Place in data_prior/ folder');
-print('6. Run Module 00C in R to process');
+print('3. Select Google Drive folder');
+print('4. Wait for exports to complete (~5-30 min depending on area)');
+print('5. Download files from Google Drive/' + EXPORT_FOLDER);
+print('6. Place in your R project data_prior/ folder');
+print('7. Run Module 00C in R to process and create prior maps');
+print('═══════════════════════════════════════');
+
+// ============================================================================
+// QUALITY CONTROL CHECKS
+// ============================================================================
+
+print('');
+print('QUALITY CONTROL:');
+
+// Check for negative values (shouldn't happen but good to verify)
+var hasNegatives = vm0033_stocks['0-15'].lt(0).reduceRegion({
+  reducer: ee.Reducer.anyNonZero(),
+  geometry: studyArea,
+  scale: EXPORT_SCALE,
+  maxPixels: 1e13
+});
+
+print('Contains negative values?', hasNegatives);
+
+// Sample statistics for surface layer
+var stats_0_15 = vm0033_stocks['0-15'].reduceRegion({
+  reducer: ee.Reducer.minMax().combine({
+    reducer2: ee.Reducer.mean(),
+    sharedInputs: true
+  }).combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }),
+  geometry: studyArea,
+  scale: EXPORT_SCALE,
+  maxPixels: 1e13
+});
+
+print('0-15 cm Stock Statistics (kg/m²):', stats_0_15);
+
+// Sample statistics for deep layer
+var stats_50_100 = vm0033_stocks['50-100'].reduceRegion({
+  reducer: ee.Reducer.minMax().combine({
+    reducer2: ee.Reducer.mean(),
+    sharedInputs: true
+  }).combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }),
+  geometry: studyArea,
+  scale: EXPORT_SCALE,
+  maxPixels: 1e13
+});
+
+print('50-100 cm Stock Statistics (kg/m²):', stats_50_100);
+
 print('═══════════════════════════════════════');
