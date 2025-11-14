@@ -1,14 +1,17 @@
 # ============================================================================
 # MODULE 03: BLUE CARBON DEPTH HARMONIZATION USING SPLINES
 # ============================================================================
-# PURPOSE: Harmonize depth profiles to standard depths using equal-area splines
-#          with stratum-specific parameters and uncertainty quantification
+# PURPOSE: Harmonize SOC and bulk density depth profiles to standard depths
+#          using equal-area splines with stratum-specific parameters and
+#          uncertainty quantification. Calculate continuous carbon stocks (kg/m²).
 # INPUTS:
 #   - data_processed/cores_clean_bluecarbon.rds
 # OUTPUTS:
-#   - data_processed/cores_harmonized_spline_bluecarbon.rds
-#   - outputs/plots/by_stratum/spline_fits_*.png
-#   - diagnostics/spline_diagnostics.rds
+#   - data_processed/cores_harmonized_bluecarbon.rds (SOC, BD, carbon stocks)
+#   - data_processed/cores_harmonized_bluecarbon.csv
+#   - outputs/plots/by_stratum/harmonization_fits_*.png
+#   - diagnostics/harmonization_diagnostics.rds
+#   - diagnostics/harmonization_diagnostics.csv
 # ============================================================================
 
 # ============================================================================
@@ -125,6 +128,11 @@ for (i in 1:nrow(core_type_summary)) {
 #' @param values Vector of SOC values (g/kg)
 #' @param standard_depths Depths to predict at
 #' @return Predicted values or NULL
+#'
+#' NOTE: This implements a natural cubic spline rather than a true "equal-area"
+#' mass-preserving spline due to complexity. For composite samples with sparse
+#' depth coverage, consider using method="smoothing_spline" or method="linear"
+#' if oscillations occur.
 equal_area_spline <- function(depths, values, standard_depths) {
 
   if (length(depths) < 3) {
@@ -132,13 +140,29 @@ equal_area_spline <- function(depths, values, standard_depths) {
   }
 
   tryCatch({
-    # Fit piecewise quadratic spline
-    # Using splinefun with method="natural" for smooth interpolation
-    spline_func <- splinefun(x = depths, y = values, method = "natural")
+    # Use monotonic Hermite spline (method="monoH.FC") if values are decreasing
+    # This prevents unrealistic oscillations while maintaining smoothness
+    is_decreasing <- cor(depths, values, method = "spearman") < -0.3
+
+    if (is_decreasing && requireNamespace("stats", quietly = TRUE)) {
+      # Monotonic spline prevents unrealistic increases/oscillations
+      spline_func <- splinefun(x = depths, y = values, method = "monoH.FC")
+    } else {
+      # Natural cubic spline for non-monotonic or uncertain profiles
+      spline_func <- splinefun(x = depths, y = values, method = "natural")
+    }
+
     predictions <- spline_func(standard_depths)
 
     # Don't allow negative predictions
     predictions[predictions < 0] <- 0
+
+    # Check for unrealistic oscillations (>2x measured range)
+    measured_range <- diff(range(values))
+    if (max(diff(predictions)) > 2 * measured_range) {
+      # Fall back to linear interpolation if spline creates oscillations
+      return(linear_interpolation(depths, values, standard_depths))
+    }
 
     return(predictions)
   }, error = function(e) {
@@ -248,7 +272,7 @@ predict_at_standard_depths <- function(core_data, standard_depths,
   core_type <- unique(core_data$core_type_clean)[1]
   if (is.na(core_type)) core_type <- "Unknown"
 
-  # Get predictions using selected method
+  # Get SOC predictions using selected method
   predictions <- interpolate_depths(
     depths = core_data$depth_cm,
     values = core_data$soc_g_kg,
@@ -261,13 +285,55 @@ predict_at_standard_depths <- function(core_data, standard_depths,
     return(NULL)
   }
 
+  # Get Bulk Density predictions using selected method
+  bd_predictions <- interpolate_depths(
+    depths = core_data$depth_cm,
+    values = core_data$bulk_density_g_cm3,
+    standard_depths = standard_depths,
+    method = method,
+    core_type = core_type
+  )
+
+  if (is.null(bd_predictions)) {
+    # If BD interpolation fails, use mean BD from the core
+    bd_predictions <- rep(mean(core_data$bulk_density_g_cm3, na.rm = TRUE),
+                          length(standard_depths))
+  }
+
   # Initialize results
   result <- data.frame(
     core_id = unique(core_data$core_id),
     stratum = unique(core_data$stratum),
     depth_cm = standard_depths,
-    soc_harmonized = predictions
+    soc_harmonized = predictions,
+    bd_harmonized = bd_predictions
   )
+
+  # Calculate carbon stock (kg/m²) from harmonized SOC and BD
+  # Formula: SOC (g/kg) / 1000 × BD (g/cm³) × depth_increment (cm) / 10 = kg/m²
+  # For VM0033 standard depths, calculate incremental stocks
+  result$carbon_stock_kg_m2 <- NA_real_
+
+  for (i in 1:nrow(result)) {
+    # Get depth increment for this depth
+    if (i == 1) {
+      depth_top <- 0
+      depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
+    } else if (i == nrow(result)) {
+      depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
+      depth_bottom <- MAX_CORE_DEPTH
+    } else {
+      depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
+      depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
+    }
+
+    depth_increment <- depth_bottom - depth_top
+
+    # Calculate carbon stock for this increment
+    result$carbon_stock_kg_m2[i] <- (result$soc_harmonized[i] / 1000) *
+                                     result$bd_harmonized[i] *
+                                     depth_increment / 10
+  }
 
   # Add metadata
   result$longitude <- unique(core_data$longitude)
@@ -291,13 +357,14 @@ predict_at_standard_depths <- function(core_data, standard_depths,
   if (n_boot > 0 && has_boot) {
 
     boot_predictions <- matrix(NA, nrow = n_boot, ncol = length(standard_depths))
+    boot_bd_predictions <- matrix(NA, nrow = n_boot, ncol = length(standard_depths))
 
     for (i in 1:n_boot) {
       # Resample with replacement
       boot_indices <- sample(1:nrow(core_data), replace = TRUE)
       boot_data <- core_data[boot_indices, ]
 
-      # Get predictions for bootstrap sample
+      # Get SOC predictions for bootstrap sample
       boot_pred <- interpolate_depths(
         depths = boot_data$depth_cm,
         values = boot_data$soc_g_kg,
@@ -309,9 +376,22 @@ predict_at_standard_depths <- function(core_data, standard_depths,
       if (!is.null(boot_pred)) {
         boot_predictions[i, ] <- boot_pred
       }
+
+      # Get BD predictions for bootstrap sample
+      boot_bd_pred <- interpolate_depths(
+        depths = boot_data$depth_cm,
+        values = boot_data$bulk_density_g_cm3,
+        standard_depths = standard_depths,
+        method = method,
+        core_type = core_type
+      )
+
+      if (!is.null(boot_bd_pred)) {
+        boot_bd_predictions[i, ] <- boot_bd_pred
+      }
     }
 
-    # Calculate confidence intervals
+    # Calculate confidence intervals for SOC
     ci_level <- CONFIDENCE_LEVEL
     alpha <- 1 - ci_level
 
@@ -325,6 +405,14 @@ predict_at_standard_depths <- function(core_data, standard_depths,
     # Calculate combined uncertainty (measurement + interpolation)
     result$soc_se_combined <- sqrt(result$soc_se^2 +
                                     (result$soc_harmonized * measurement_cv)^2)
+
+    # Calculate confidence intervals for BD
+    result$bd_lower <- apply(boot_bd_predictions, 2,
+                              function(x) quantile(x, alpha/2, na.rm = TRUE))
+    result$bd_upper <- apply(boot_bd_predictions, 2,
+                              function(x) quantile(x, 1 - alpha/2, na.rm = TRUE))
+    result$bd_se <- apply(boot_bd_predictions, 2,
+                          function(x) sd(x, na.rm = TRUE))
   }
 
   return(result)
@@ -533,7 +621,9 @@ log_message("Performing validation checks...")
 # Check for unrealistic predictions
 harmonized_cores <- harmonized_cores %>%
   mutate(
-    qa_realistic = soc_harmonized >= 0 & soc_harmonized <= QC_SOC_MAX,
+    qa_realistic_soc = soc_harmonized >= 0 & soc_harmonized <= QC_SOC_MAX,
+    qa_realistic_bd = bd_harmonized >= QC_BD_MIN & bd_harmonized <= QC_BD_MAX,
+    qa_realistic = qa_realistic_soc & qa_realistic_bd,
     qa_monotonic = TRUE,  # Will check per core
     qa_unusual_pattern = FALSE  # Flag unusual spikes/drops
   )
@@ -865,6 +955,10 @@ summary_overall <- harmonized_cores %>%
     sd_soc = sd(soc_harmonized, na.rm = TRUE),
     min_soc = min(soc_harmonized, na.rm = TRUE),
     max_soc = max(soc_harmonized, na.rm = TRUE),
+    mean_bd = mean(bd_harmonized, na.rm = TRUE),
+    sd_bd = sd(bd_harmonized, na.rm = TRUE),
+    mean_carbon_stock_kg_m2 = mean(carbon_stock_kg_m2, na.rm = TRUE),
+    sd_carbon_stock_kg_m2 = sd(carbon_stock_kg_m2, na.rm = TRUE),
     pct_interpolated = mean(is_interpolated) * 100,
     .groups = "drop"
   )
@@ -877,6 +971,10 @@ summary_stratum <- harmonized_cores %>%
     n_cores = n_distinct(core_id),
     mean_soc = mean(soc_harmonized, na.rm = TRUE),
     sd_soc = sd(soc_harmonized, na.rm = TRUE),
+    mean_bd = mean(bd_harmonized, na.rm = TRUE),
+    sd_bd = sd(bd_harmonized, na.rm = TRUE),
+    mean_carbon_stock_kg_m2 = mean(carbon_stock_kg_m2, na.rm = TRUE),
+    sd_carbon_stock_kg_m2 = sd(carbon_stock_kg_m2, na.rm = TRUE),
     .groups = "drop"
   )
 
@@ -888,6 +986,8 @@ summary_core_type <- harmonized_cores %>%
     n_cores = n_distinct(core_id),
     n_depths = n(),
     mean_soc = mean(soc_harmonized, na.rm = TRUE),
+    mean_bd = mean(bd_harmonized, na.rm = TRUE),
+    mean_carbon_stock_kg_m2 = mean(carbon_stock_kg_m2, na.rm = TRUE),
     .groups = "drop"
   )
 
@@ -982,19 +1082,59 @@ surface_summary <- harmonized_cores %>%
   filter(depth_cm == STANDARD_DEPTHS[1], qa_realistic) %>%
   group_by(stratum) %>%
   summarise(
-    mean = mean(soc_harmonized),
-    min = min(soc_harmonized),
-    max = max(soc_harmonized),
+    mean_soc = mean(soc_harmonized),
+    min_soc = min(soc_harmonized),
+    max_soc = max(soc_harmonized),
     .groups = "drop"
   ) %>%
-  arrange(desc(mean))
+  arrange(desc(mean_soc))
 
 for (i in 1:nrow(surface_summary)) {
   cat(sprintf("  %s: %.1f g/kg (range: %.1f - %.1f)\n",
               surface_summary$stratum[i],
-              surface_summary$mean[i],
-              surface_summary$min[i],
-              surface_summary$max[i]))
+              surface_summary$mean_soc[i],
+              surface_summary$min_soc[i],
+              surface_summary$max_soc[i]))
+}
+
+cat("\nBulk Density at VM0033 Surface Layer (7.5 cm) by Stratum:\n")
+bd_summary <- harmonized_cores %>%
+  filter(depth_cm == STANDARD_DEPTHS[1], qa_realistic) %>%
+  group_by(stratum) %>%
+  summarise(
+    mean_bd = mean(bd_harmonized),
+    min_bd = min(bd_harmonized),
+    max_bd = max(bd_harmonized),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_bd))
+
+for (i in 1:nrow(bd_summary)) {
+  cat(sprintf("  %s: %.2f g/cm³ (range: %.2f - %.2f)\n",
+              bd_summary$stratum[i],
+              bd_summary$mean_bd[i],
+              bd_summary$min_bd[i],
+              bd_summary$max_bd[i]))
+}
+
+cat("\nCarbon Stock at VM0033 Surface Layer (7.5 cm) by Stratum:\n")
+stock_summary <- harmonized_cores %>%
+  filter(depth_cm == STANDARD_DEPTHS[1], qa_realistic) %>%
+  group_by(stratum) %>%
+  summarise(
+    mean_stock = mean(carbon_stock_kg_m2),
+    min_stock = min(carbon_stock_kg_m2),
+    max_stock = max(carbon_stock_kg_m2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_stock))
+
+for (i in 1:nrow(stock_summary)) {
+  cat(sprintf("  %s: %.2f kg/m² (range: %.2f - %.2f)\n",
+              stock_summary$stratum[i],
+              stock_summary$mean_stock[i],
+              stock_summary$min_stock[i],
+              stock_summary$max_stock[i]))
 }
 
 cat("\nOutputs:\n")
@@ -1015,7 +1155,10 @@ cat("    diagnostics/loo_crossval.png (if enough data)\n")
 
 cat("\nKey Features:\n")
 cat("  ✓ VM0033 standard depth intervals (0-15, 15-30, 30-50, 50-100 cm)\n")
-cat("  ✓ Equal-area spline interpolation (VM0033 recommended)\n")
+cat("  ✓ SOC and bulk density harmonization (dual variable interpolation)\n")
+cat("  ✓ Carbon stock calculation (kg/m²) from harmonized values\n")
+cat("  ✓ Monotonic spline interpolation (prevents unrealistic oscillations)\n")
+cat("  ✓ Automatic fallback to linear interpolation if spline oscillates\n")
 cat("  ✓ Core-type-specific smoothing parameters\n")
 cat("  ✓ Enhanced monotonicity checks (allows slight depth increases)\n")
 cat("  ✓ Uncertainty propagation (measurement + interpolation)\n")
