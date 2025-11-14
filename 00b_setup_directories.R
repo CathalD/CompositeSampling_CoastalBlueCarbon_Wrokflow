@@ -46,9 +46,11 @@ output_dirs <- c(
   "outputs/mmrv_reports"           # Module 07: verification package
 )
 
-# Diagnostic directories (used by Modules 03-05)
+# Diagnostic directories (used by Modules 01, 03-05)
 diagnostic_dirs <- c(
   "diagnostics",
+  "diagnostics/data_prep",         # Module 01: data prep diagnostics
+  "diagnostics/qaqc",              # Module 01: QA/QC reports
   "diagnostics/variograms",        # Module 04: variogram plots
   "diagnostics/crossvalidation"    # Modules 04 & 05: CV metrics
 )
