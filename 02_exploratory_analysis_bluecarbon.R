@@ -144,7 +144,7 @@ stratum_stats <- cores_clean %>%
     mean_bd = mean(bulk_density_g_cm3, na.rm = TRUE),
     sd_bd = sd(bulk_density_g_cm3, na.rm = TRUE),
     mean_depth = mean(depth_cm, na.rm = TRUE),
-    mean_carbon_stock = mean(carbon_stock_mg_ha, na.rm = TRUE),
+    mean_carbon_stock = mean(carbon_stock_kg_m2, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   arrange(desc(mean_soc))
@@ -635,8 +635,8 @@ log_message("Creating carbon stock plots...")
 stock_stats <- cores_clean %>%
   group_by(stratum) %>%
   summarise(
-    mean_stock = mean(carbon_stock_mg_ha, na.rm = TRUE),
-    sd_stock = sd(carbon_stock_mg_ha, na.rm = TRUE),
+    mean_stock = mean(carbon_stock_kg_m2, na.rm = TRUE),
+    sd_stock = sd(carbon_stock_kg_m2, na.rm = TRUE),
     n = n(),
     se = sd_stock / sqrt(n),
     ci_95 = qt(0.975, df = n - 1) * se,
@@ -644,8 +644,8 @@ stock_stats <- cores_clean %>%
   )
 
 # Carbon stock by stratum with 95% CI
-p_stock_stratum <- ggplot(cores_clean, aes(x = reorder(stratum, -carbon_stock_mg_ha),
-                                           y = carbon_stock_mg_ha,
+p_stock_stratum <- ggplot(cores_clean, aes(x = reorder(stratum, -carbon_stock_kg_m2),
+                                           y = carbon_stock_kg_m2,
                                            fill = stratum)) +
   geom_boxplot(alpha = 0.7) +
   geom_errorbar(data = stock_stats,
@@ -659,7 +659,7 @@ p_stock_stratum <- ggplot(cores_clean, aes(x = reorder(stratum, -carbon_stock_mg
     title = "Carbon Stock per Sample by Stratum",
     subtitle = "Black diamonds show mean ± 95% CI",
     x = "Stratum",
-    y = "Carbon Stock (Mg C/ha)",
+    y = "Carbon Stock (kg C/m²)",
     fill = "Stratum"
   ) +
   theme(
@@ -672,13 +672,13 @@ p_stock_stratum <- ggplot(cores_clean, aes(x = reorder(stratum, -carbon_stock_mg
 core_totals <- cores_clean %>%
   group_by(core_id, stratum) %>%
   summarise(
-    total_stock = sum(carbon_stock_mg_ha, na.rm = TRUE),
+    total_stock = sum(carbon_stock_kg_m2, na.rm = TRUE),
     max_depth = max(depth_bottom_cm),
     .groups = "drop"
   )
 
-p_stock_total <- ggplot(core_totals, aes(x = reorder(stratum, -total_stock), 
-                                         y = total_stock, 
+p_stock_total <- ggplot(core_totals, aes(x = reorder(stratum, -total_stock),
+                                         y = total_stock,
                                          fill = stratum)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = STRATUM_COLORS) +
@@ -686,7 +686,7 @@ p_stock_total <- ggplot(core_totals, aes(x = reorder(stratum, -total_stock),
     title = "Total Carbon Stock by Core",
     subtitle = sprintf("Summed across depth (n = %d cores)", nrow(core_totals)),
     x = "Stratum",
-    y = "Total Carbon Stock (Mg C/ha)",
+    y = "Total Carbon Stock (kg C/m²)",
     fill = "Stratum"
   ) +
   theme(
@@ -846,8 +846,8 @@ if ("scenario_type" %in% names(cores_clean) && n_distinct(cores_clean$scenario_t
       n = n(),
       se = sd_soc / sqrt(n),
       ci_95 = qt(0.975, df = n - 1) * se,
-      mean_stock = mean(carbon_stock_mg_ha, na.rm = TRUE),
-      sd_stock = sd(carbon_stock_mg_ha, na.rm = TRUE),
+      mean_stock = mean(carbon_stock_kg_m2, na.rm = TRUE),
+      sd_stock = sd(carbon_stock_kg_m2, na.rm = TRUE),
       se_stock = sd_stock / sqrt(n),
       ci_95_stock = qt(0.975, df = n - 1) * se_stock,
       .groups = "drop"
@@ -920,7 +920,7 @@ log_message("Creating correlation matrix...")
 
 # Select numeric variables for correlation
 cor_vars <- cores_clean %>%
-  select(soc_g_kg, bulk_density_g_cm3, depth_cm, carbon_stock_mg_ha) %>%
+  select(soc_g_kg, bulk_density_g_cm3, depth_cm, carbon_stock_kg_m2) %>%
   na.omit()
 
 if (nrow(cor_vars) > 0) {
@@ -973,14 +973,14 @@ stratum_table <- stratum_stats %>%
   mutate(
     SOC = sprintf("%.1f ± %.1f", mean_soc, sd_soc),
     BD = sprintf("%.2f ± %.2f", mean_bd, sd_bd),
-    `C Stock` = sprintf("%.1f", mean_carbon_stock)
+    `C Stock` = sprintf("%.2f", mean_carbon_stock)
   ) %>%
-  select(Stratum = stratum, 
-         `N Cores` = n_cores, 
+  select(Stratum = stratum,
+         `N Cores` = n_cores,
          `N Samples` = n_samples,
          `SOC (g/kg)` = SOC,
          `BD (g/cm³)` = BD,
-         `C Stock (Mg/ha)` = `C Stock`)
+         `C Stock (kg/m²)` = `C Stock`)
 
 # Create table plot
 table_grob <- gridExtra::tableGrob(stratum_table, rows = NULL)

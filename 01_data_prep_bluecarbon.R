@@ -103,11 +103,13 @@ validate_strata <- function(strata_vector, valid_strata = VALID_STRATA) {
 
 #' Calculate SOC stock for a depth increment
 calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_cm) {
-  # SOC stock (Mg/ha) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) × 100
-  soc_prop <- soc_g_kg / 1000
+  # SOC stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) / 10
+  # This is the standard unit for carbon stock reporting and aligns with prior data
+  # Note: To convert to Mg/ha for VM0033 reporting, multiply by 10
+  soc_prop <- soc_g_kg / 1000  # Convert g/kg to kg/kg (proportion)
   depth_increment <- depth_bottom_cm - depth_top_cm
-  soc_stock <- soc_prop * bd_g_cm3 * depth_increment * 100
-  return(soc_stock)
+  soc_stock_kg_m2 <- soc_prop * bd_g_cm3 * depth_increment / 10
+  return(soc_stock_kg_m2)
 }
 
 #' Assign bulk density defaults by stratum if missing
@@ -628,11 +630,12 @@ log_message("Calculating carbon stocks...")
 
 cores_complete <- cores_complete %>%
   mutate(
-    # Carbon stock per sample (Mg C/ha)
-    carbon_stock_mg_ha = calculate_soc_stock(
-      soc_g_kg, 
-      bulk_density_g_cm3, 
-      depth_top_cm, 
+    # Carbon stock per sample (kg C/m²)
+    # Standard unit for carbon stock reporting and aligns with prior data
+    carbon_stock_kg_m2 = calculate_soc_stock(
+      soc_g_kg,
+      bulk_density_g_cm3,
+      depth_top_cm,
       depth_bottom_cm
     )
   )
@@ -641,7 +644,7 @@ cores_complete <- cores_complete %>%
 core_totals <- cores_complete %>%
   group_by(core_id, stratum) %>%
   summarise(
-    total_carbon_stock = sum(carbon_stock_mg_ha, na.rm = TRUE),
+    total_carbon_stock = sum(carbon_stock_kg_m2, na.rm = TRUE),
     max_depth_sampled = max(depth_bottom_cm),
     n_samples = n(),
     .groups = "drop"
