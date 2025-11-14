@@ -8,13 +8,13 @@
 # PROJECT METADATA (VM0033 Required)
 # ============================================================================
 
-PROJECT_NAME <- "Blue_Carbon_Canada"
+PROJECT_NAME <- "BC_Coastal_BlueCarbon_2024"
 PROJECT_SCENARIO <- "PROJECT"  # Options: BASELINE, PROJECT, CONTROL, DEGRADED
 MONITORING_YEAR <- 2024
 
 # Project location (for documentation)
 PROJECT_LOCATION <- "Chemainus Estuary, British Columbia, Canada"
-PROJECT_DESCRIPTION <- "Blue carbon assessment of coastal salt marsh and eelgrass ecosystems"
+PROJECT_DESCRIPTION <- "Blue carbon monitoring for carbon credit development - VM0033 compliant assessment of coastal salt marsh and eelgrass restoration"
 
 # ============================================================================
 # ECOSYSTEM STRATIFICATION
@@ -95,10 +95,10 @@ INPUT_CRS <- 4326  # EPSG:4326 (WGS84)
 
 # Processing CRS (projected, equal-area for accurate calculations)
 # Change this for your region:
-PROCESSING_CRS <- 3347  # EPSG:3347 (Canada Albers Equal Area)
+PROCESSING_CRS <- 3005  # EPSG:3005 (NAD83 / BC Albers) - OPTIMIZED FOR BC
 # Other options:
-#   - 3005: NAD83 / BC Albers
-#   - 32610: WGS 84 / UTM zone 10N (BC coast)
+#   - 3347: Canada Albers Equal Area (good for all Canada)
+#   - 32610: WGS 84 / UTM zone 10N (BC coast - Chemainus area)
 #   - 32611: WGS 84 / UTM zone 11N (BC interior)
 
 # ============================================================================
