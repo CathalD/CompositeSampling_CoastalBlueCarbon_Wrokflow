@@ -140,10 +140,12 @@ load_stock_rasters <- function(method) {
   # Extract depth from filenames:
   #   Kriging: carbon_stock_{stratum}_{depth}cm.tif
   #   RF: carbon_stock_rf_{depth}cm.tif
+  # NOTE: Filenames use rounded depths (7.5→8, 22.5→22, 40→40, 75→75)
+  # The actual VM0033 midpoints are 7.5, 22.5, 40, 75 cm
   depth_files <- data.frame(
     file = stock_files,
     depth = sapply(stock_files, function(f) {
-      # Extract number before "cm" in filename
+      # Extract number before "cm" in filename (will be rounded)
       as.numeric(gsub(".*_(\\d+)cm\\.tif$", "\\1", basename(f)))
     })
   )
@@ -179,10 +181,11 @@ load_stock_rasters <- function(method) {
     # Extract depth from filenames:
     #   Kriging: se_combined_{stratum}_{depth}cm.tif
     #   RF: se_combined_{depth}cm.tif
+    # NOTE: Same as stocks - filenames use rounded depths (7.5→8, 22.5→22)
     se_depth_files <- data.frame(
       file = se_files,
       depth = sapply(se_files, function(f) {
-        # Extract number before "cm" in filename
+        # Extract number before "cm" in filename (will be rounded)
         as.numeric(gsub(".*_(\\d+)cm\\.tif$", "\\1", basename(f)))
       })
     )
@@ -300,12 +303,20 @@ for (method in METHODS_AVAILABLE) {
     log_message(sprintf("\n  Interval: %s (midpoint %.1f cm)", interval_label, depth_mid))
 
     # Check if we have stock for this depth
-    depth_str <- as.character(depth_mid)
+    # NOTE: Files are named with rounded depths (7.5→8, 22.5→22)
+    # but actual VM0033 midpoints are exact (7.5, 22.5)
+    # Round the depth to match file naming convention
+    depth_rounded <- round(depth_mid)
+    depth_str <- as.character(depth_rounded)
 
     if (!depth_str %in% names(stocks)) {
-      log_message(sprintf("    No stock raster for depth %.1f cm", depth_mid), "WARNING")
+      log_message(sprintf("    No stock raster for depth %.1f cm (looking for %d cm in files)",
+                         depth_mid, depth_rounded), "WARNING")
       next
     }
+
+    log_message(sprintf("    Found stock file for depth %.1f cm (file uses %d cm)",
+                       depth_mid, depth_rounded))
 
     # Load stock raster (computed by Module 04/05, converted to Mg/ha)
     # Note: These are carbon stocks, not SOC concentrations
@@ -316,10 +327,10 @@ for (method in METHODS_AVAILABLE) {
     # Load uncertainty if available (also converted to Mg/ha)
     if (has_uncertainties && depth_str %in% names(uncertainties)) {
       se_raster <- uncertainties[[depth_str]]
-      log_message(sprintf("    Loaded carbon stock (Mg/ha) with uncertainty"))
+      log_message(sprintf("    Carbon stock (Mg/ha) loaded with uncertainty"))
     } else {
       se_raster <- NULL
-      log_message(sprintf("    Loaded carbon stock (Mg/ha) without uncertainty"))
+      log_message(sprintf("    Carbon stock (Mg/ha) loaded without uncertainty"))
     }
 
     # Store results
