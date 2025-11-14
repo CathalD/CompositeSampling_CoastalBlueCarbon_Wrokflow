@@ -95,8 +95,9 @@ INPUT_CRS <- 4326  # EPSG:4326 (WGS84)
 
 # Processing CRS (projected, equal-area for accurate calculations)
 # Change this for your region:
-PROCESSING_CRS <- 3005  # EPSG:3005 (NAD83 / BC Albers) - OPTIMIZED FOR BC
+PROCESSING_CRS <- 3347 # Canada Albers Equal Area (good for all Canada)
 # Other options:
+#   - 3005:  EPSG:3005 (NAD83 / BC Albers) - OPTIMIZED FOR BC
 #   - 3347: Canada Albers Equal Area (good for all Canada)
 #   - 32610: WGS 84 / UTM zone 10N (BC coast - Chemainus area)
 #   - 32611: WGS 84 / UTM zone 11N (BC interior)
