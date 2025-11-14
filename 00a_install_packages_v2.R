@@ -19,12 +19,22 @@ options(
   repos = c(CRAN = "https://cloud.r-project.org/")
 )
 
-log_file <- file.path(getwd(), paste0("package_install_log_", Sys.Date(), ".txt"))
+# Create logs directory if it doesn't exist
+if (!dir.exists("logs")) {
+  dir.create("logs", recursive = TRUE, showWarnings = FALSE)
+}
+
+log_file <- file.path("logs", paste0("package_install_log_", Sys.Date(), ".txt"))
 log_message <- function(msg, level = "INFO") {
   timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
   log_entry <- sprintf("[%s] %s: %s", timestamp, level, msg)
   cat(log_entry, "\n")
-  cat(log_entry, "\n", file = log_file, append = TRUE)
+  # Error handling for log file
+  tryCatch({
+    cat(log_entry, "\n", file = log_file, append = TRUE)
+  }, error = function(e) {
+    # Silently continue if log file can't be written
+  })
 }
 
 log_message("Starting package installation (binary mode)")
@@ -54,16 +64,18 @@ analysis_packages <- c("gridExtra", "corrplot", "lubridate")
 spatial_packages <- c("sf", "raster", "terra", "gstat", "spdep")
 modeling_packages <- c("nlme", "mgcv", "splines", "randomForest", "caret", "boot")
 bluecarbon_packages <- c("CAST", "aqp")
+reporting_packages <- c("openxlsx", "knitr")  # For Module 07 (MMRV reports)
 
 # Optional but useful
-optional_packages <- c("automap", "here", "knitr", "viridis")
+optional_packages <- c("automap", "here", "viridis", "writexl")
 
 required_packages <- c(
-  core_packages, 
-  analysis_packages, 
-  spatial_packages, 
+  core_packages,
+  analysis_packages,
+  spatial_packages,
   modeling_packages,
-  bluecarbon_packages
+  bluecarbon_packages,
+  reporting_packages
 )
 
 cat("Package Summary:\n")
@@ -184,6 +196,12 @@ bluecarbon_results <- sapply(bluecarbon_packages, install_package_binary)
 results$bluecarbon <- sum(bluecarbon_results)
 cat(sprintf("  Success: %d/%d\n\n", sum(bluecarbon_results), length(bluecarbon_packages)))
 
+# Reporting packages
+cat("REPORTING PACKAGES:\n")
+reporting_results <- sapply(reporting_packages, install_package_binary)
+results$reporting <- sum(reporting_results)
+cat(sprintf("  Success: %d/%d\n\n", sum(reporting_results), length(reporting_packages)))
+
 # Optional packages
 cat("\n========================================\n")
 cat("OPTIONAL PACKAGES\n")
@@ -228,7 +246,7 @@ if (length(missing_packages) > 0) {
 }
 
 # Check critical packages
-critical_packages <- c("dplyr", "ggplot2", "sf", "terra", "gstat")
+critical_packages <- c("dplyr", "ggplot2", "sf", "terra", "gstat", "openxlsx")
 critical_installed <- sapply(critical_packages,
                              function(pkg) requireNamespace(pkg, quietly = TRUE))
 
@@ -241,7 +259,7 @@ cat("\n")
 
 # Save summary
 if (!dir.exists("data_processed")) {
-  dir.create("data_processed", recursive = TRUE)
+  dir.create("data_processed", recursive = TRUE, showWarnings = FALSE)
 }
 
 install_summary <- list(
@@ -254,8 +272,18 @@ install_summary <- list(
   installation_method = "binary (with source fallback)"
 )
 
-saveRDS(install_summary, "data_processed/package_install_summary.rds")
-cat("Installation summary saved\n")
+# Save summary with error handling
+summary_saved <- tryCatch({
+  saveRDS(install_summary, "data_processed/package_install_summary.rds")
+  TRUE
+}, error = function(e) {
+  cat("Warning: Could not save installation summary\n")
+  FALSE
+})
+
+if (summary_saved) {
+  cat("Installation summary saved to: data_processed/package_install_summary.rds\n")
+}
 cat("Log file:", log_file, "\n\n")
 
 # ============================================================================
@@ -268,13 +296,13 @@ if (success_rate == 100) {
   cat("  source('00b_setup_directories.R')\n\n")
   
 } else if (success_rate >= 90) {
-  cat("✓ MOSTLY COMPLETE (%.1f%%)\n\n", success_rate)
+  cat(sprintf("✓ MOSTLY COMPLETE (%.1f%%)\n\n", success_rate))
   cat("Core packages installed, some optional features may be unavailable.\n\n")
   cat("Next step:\n")
   cat("  source('00b_setup_directories.R')\n\n")
-  
+
 } else {
-  cat("⚠ INCOMPLETE (%.1f%%)\n\n", success_rate)
+  cat(sprintf("⚠ INCOMPLETE (%.1f%%)\n\n", success_rate))
   
   if (length(missing_packages) > 0) {
     cat("Try installing missing packages manually:\n")
