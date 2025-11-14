@@ -776,7 +776,125 @@ for (stratum_name in strata) {
          p, width = 12, height = 8, dpi = 300)
 }
 
-log_message("Saved harmonization fit plots")
+log_message("Saved SOC harmonization fit plots")
+
+# Plot 1b: Bulk Density harmonization fits by stratum
+log_message("Creating bulk density harmonization plots...")
+
+for (stratum_name in strata) {
+
+  cores_stratum <- cores_clean %>%
+    filter(stratum == stratum_name)
+
+  if (nrow(cores_stratum) == 0) next
+
+  # Use same core sample as SOC plots for consistency
+  flagged_cores <- unique(harmonized_cores$core_id[
+    harmonized_cores$stratum == stratum_name &
+    (!harmonized_cores$qa_monotonic | harmonized_cores$qa_unusual_pattern)
+  ])
+
+  n_flagged <- min(3, length(flagged_cores))
+  n_random <- min(6 - n_flagged, n_distinct(cores_stratum$core_id) - n_flagged)
+
+  core_sample <- c(
+    if (n_flagged > 0) sample(flagged_cores, n_flagged) else c(),
+    sample(setdiff(unique(cores_stratum$core_id), flagged_cores), n_random)
+  )
+
+  plot_data <- cores_stratum %>%
+    filter(core_id %in% core_sample)
+
+  # Get harmonized predictions for these cores
+  pred_data <- harmonized_cores %>%
+    filter(core_id %in% core_sample)
+
+  p_bd <- ggplot() +
+    # Original data points
+    geom_point(data = plot_data,
+               aes(x = bulk_density_g_cm3, y = -depth_cm),
+               size = 3, alpha = 0.7, shape = 21, fill = "darkgreen", color = "white") +
+    # Harmonized predictions
+    geom_line(data = pred_data,
+              aes(x = bd_harmonized, y = -depth_cm, color = core_id),
+              size = 1.2) +
+    # CI if available
+    {if ("bd_lower" %in% names(pred_data)) {
+      geom_ribbon(data = pred_data,
+                  aes(xmin = bd_lower, xmax = bd_upper,
+                      y = -depth_cm, group = core_id, fill = core_id),
+                  alpha = 0.15)
+    }} +
+    # Mark extrapolated regions with dashed lines
+    geom_line(data = pred_data %>% filter(!is_interpolated),
+              aes(x = bd_harmonized, y = -depth_cm, group = core_id),
+              linetype = "dashed", size = 0.8, alpha = 0.5) +
+    facet_wrap(~core_id, scales = "free_x") +
+    labs(
+      title = sprintf("%s - Bulk Density Harmonization", stratum_name),
+      subtitle = sprintf("Method: %s | Solid = measured, Dashed = extrapolated",
+                        INTERPOLATION_METHOD),
+      x = "Bulk Density (g/cm³)",
+      y = "Depth (cm)"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold")
+    )
+
+  ggsave(file.path("outputs/plots/by_stratum",
+                   sprintf("bd_harmonization_fits_%s.png", gsub(" ", "_", stratum_name))),
+         p_bd, width = 12, height = 8, dpi = 300)
+}
+
+log_message("Saved bulk density harmonization plots")
+
+# Plot 1c: Carbon Stock profiles by stratum
+log_message("Creating carbon stock profile plots...")
+
+for (stratum_name in strata) {
+
+  # Get harmonized data for this stratum
+  pred_data <- harmonized_cores %>%
+    filter(stratum == stratum_name, qa_realistic)
+
+  if (nrow(pred_data) == 0) next
+
+  # Select up to 6 cores to plot (random sample)
+  core_sample <- sample(unique(pred_data$core_id),
+                        min(6, n_distinct(pred_data$core_id)))
+
+  pred_data_sample <- pred_data %>%
+    filter(core_id %in% core_sample)
+
+  p_stock <- ggplot(pred_data_sample,
+                    aes(x = carbon_stock_kg_m2, y = -depth_cm, color = core_id)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2.5, alpha = 0.7) +
+    # Mark extrapolated regions with dashed lines
+    geom_line(data = pred_data_sample %>% filter(!is_interpolated),
+              aes(x = carbon_stock_kg_m2, y = -depth_cm, group = core_id),
+              linetype = "dashed", size = 0.8, alpha = 0.5) +
+    facet_wrap(~core_id, scales = "free_x") +
+    labs(
+      title = sprintf("%s - Carbon Stock Profiles", stratum_name),
+      subtitle = "Calculated from harmonized SOC and BD | Dashed = extrapolated",
+      x = "Carbon Stock (kg C/m²)",
+      y = "Depth (cm)"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold")
+    )
+
+  ggsave(file.path("outputs/plots/by_stratum",
+                   sprintf("carbon_stock_profiles_%s.png", gsub(" ", "_", stratum_name))),
+         p_stock, width = 12, height = 8, dpi = 300)
+}
+
+log_message("Saved carbon stock profile plots")
 
 # Plot 2: Residuals plot (observed - fitted at measured depths)
 log_message("Creating residuals plots...")
@@ -904,6 +1022,105 @@ if (nrow(diagnostics_df) > 0) {
 
   log_message("Saved enhanced diagnostic plots")
 }
+
+# Plot 4: Mean depth profiles by stratum (SOC, BD, Carbon Stock)
+log_message("Creating mean profile comparison plots...")
+
+# Calculate mean profiles by stratum and depth
+mean_profiles <- harmonized_cores %>%
+  filter(qa_realistic) %>%
+  group_by(stratum, depth_cm) %>%
+  summarise(
+    mean_soc = mean(soc_harmonized, na.rm = TRUE),
+    se_soc = sd(soc_harmonized, na.rm = TRUE) / sqrt(n()),
+    mean_bd = mean(bd_harmonized, na.rm = TRUE),
+    se_bd = sd(bd_harmonized, na.rm = TRUE) / sqrt(n()),
+    mean_carbon_stock = mean(carbon_stock_kg_m2, na.rm = TRUE),
+    se_carbon_stock = sd(carbon_stock_kg_m2, na.rm = TRUE) / sqrt(n()),
+    n_cores = n_distinct(core_id),
+    .groups = "drop"
+  )
+
+# SOC mean profile by stratum
+p_soc_mean <- ggplot(mean_profiles, aes(x = mean_soc, y = -depth_cm,
+                                         color = stratum, fill = stratum)) +
+  geom_ribbon(aes(xmin = mean_soc - se_soc, xmax = mean_soc + se_soc),
+              alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = STRATUM_COLORS) +
+  scale_fill_manual(values = STRATUM_COLORS) +
+  labs(
+    title = "Mean SOC Depth Profiles by Stratum",
+    subtitle = "Shaded area shows ± SE | From harmonized data",
+    x = "SOC (g/kg)",
+    y = "Depth (cm)",
+    color = "Stratum",
+    fill = "Stratum"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+ggsave("outputs/plots/mean_soc_profiles_by_stratum.png",
+       p_soc_mean, width = 10, height = 8, dpi = 300)
+
+# Bulk Density mean profile by stratum
+p_bd_mean <- ggplot(mean_profiles, aes(x = mean_bd, y = -depth_cm,
+                                        color = stratum, fill = stratum)) +
+  geom_ribbon(aes(xmin = mean_bd - se_bd, xmax = mean_bd + se_bd),
+              alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = STRATUM_COLORS) +
+  scale_fill_manual(values = STRATUM_COLORS) +
+  labs(
+    title = "Mean Bulk Density Depth Profiles by Stratum",
+    subtitle = "Shaded area shows ± SE | From harmonized data",
+    x = "Bulk Density (g/cm³)",
+    y = "Depth (cm)",
+    color = "Stratum",
+    fill = "Stratum"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+ggsave("outputs/plots/mean_bd_profiles_by_stratum.png",
+       p_bd_mean, width = 10, height = 8, dpi = 300)
+
+# Carbon Stock mean profile by stratum
+p_stock_mean <- ggplot(mean_profiles, aes(x = mean_carbon_stock, y = -depth_cm,
+                                           color = stratum, fill = stratum)) +
+  geom_ribbon(aes(xmin = mean_carbon_stock - se_carbon_stock,
+                  xmax = mean_carbon_stock + se_carbon_stock),
+              alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = STRATUM_COLORS) +
+  scale_fill_manual(values = STRATUM_COLORS) +
+  labs(
+    title = "Mean Carbon Stock Depth Profiles by Stratum",
+    subtitle = "Shaded area shows ± SE | From harmonized data",
+    x = "Carbon Stock (kg C/m²)",
+    y = "Depth (cm)",
+    color = "Stratum",
+    fill = "Stratum"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+ggsave("outputs/plots/mean_carbon_stock_profiles_by_stratum.png",
+       p_stock_mean, width = 10, height = 8, dpi = 300)
+
+log_message("Saved mean profile comparison plots")
 
 # ============================================================================
 # SAVE RESULTS
@@ -1147,11 +1364,21 @@ cat("    diagnostics/harmonization_diagnostics.rds\n")
 cat("    diagnostics/monotonicity_summary.rds\n")
 cat("  \n")
 cat("  Plots:\n")
-cat("    outputs/plots/by_stratum/harmonization_fits_*.png\n")
-cat("    diagnostics/residuals_plot.png\n")
-cat("    diagnostics/rmse_by_stratum.png\n")
-cat("    diagnostics/r2_by_core_type.png (if multiple types)\n")
-cat("    diagnostics/loo_crossval.png (if enough data)\n")
+cat("    By Stratum (individual cores):\n")
+cat("      outputs/plots/by_stratum/harmonization_fits_*.png (SOC)\n")
+cat("      outputs/plots/by_stratum/bd_harmonization_fits_*.png (Bulk Density)\n")
+cat("      outputs/plots/by_stratum/carbon_stock_profiles_*.png (Carbon Stocks)\n")
+cat("    \n")
+cat("    Summary Profiles (mean by stratum):\n")
+cat("      outputs/plots/mean_soc_profiles_by_stratum.png\n")
+cat("      outputs/plots/mean_bd_profiles_by_stratum.png\n")
+cat("      outputs/plots/mean_carbon_stock_profiles_by_stratum.png\n")
+cat("    \n")
+cat("    Diagnostics:\n")
+cat("      diagnostics/residuals_plot.png\n")
+cat("      diagnostics/rmse_by_stratum.png\n")
+cat("      diagnostics/r2_by_core_type.png (if multiple types)\n")
+cat("      diagnostics/loo_crossval.png (if enough data)\n")
 
 cat("\nKey Features:\n")
 cat("  ✓ VM0033 standard depth intervals (0-15, 15-30, 30-50, 50-100 cm)\n")
@@ -1166,7 +1393,9 @@ cat("  ✓ Leave-one-out cross-validation\n")
 cat("  ✓ Interpolation vs extrapolation flagging\n")
 
 cat("\nNext steps:\n")
-cat("  1. Review harmonization plots in outputs/plots/by_stratum/\n")
+cat("  1. Review harmonization plots:\n")
+cat("     - SOC, BD, and carbon stock fits in outputs/plots/by_stratum/\n")
+cat("     - Mean profiles by stratum in outputs/plots/mean_*_profiles_by_stratum.png\n")
 cat("  2. Check diagnostics in diagnostics/ folder\n")
 cat("  3. Review flagged cores (non-monotonic, unusual patterns)\n")
 cat("  4. Run: source('04_raster_predictions_kriging_bluecarbon.R')\n\n")
