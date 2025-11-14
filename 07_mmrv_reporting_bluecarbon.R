@@ -4,14 +4,14 @@
 # PURPOSE: Generate verification-ready outputs for VM0033, ORRAA, and Canadian
 #          blue carbon standards including QA/QC documentation and spatial exports
 # INPUTS:
-#   - outputs/carbon_stocks/*_kriging.csv (from Module 06)
-#   - outputs/carbon_stocks/*_rf.csv (from Module 06)
+#   - outputs/carbon_stocks/*_kriging.csv (from Module 06 - aggregated carbon stocks in Mg C/ha)
+#   - outputs/carbon_stocks/*_rf.csv (from Module 06 - aggregated carbon stocks in Mg C/ha)
 #   - outputs/carbon_stocks/carbon_stocks_method_comparison.csv (from Module 06)
-#   - outputs/predictions/stocks/kriging/*.tif (from Module 04)
-#   - outputs/predictions/stocks/rf/*.tif (from Module 05)
-#   - outputs/predictions/rf/aoa_*.tif (if available)
-#   - diagnostics/crossvalidation/*.csv
-#   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03)
+#   - outputs/predictions/kriging/carbon_stock_*.tif (from Module 04 - carbon stocks in kg/m²)
+#   - outputs/predictions/rf/carbon_stock_rf_*.tif (from Module 05 - carbon stocks in kg/m²)
+#   - outputs/predictions/rf/aoa_*.tif (if available - Area of Applicability)
+#   - diagnostics/crossvalidation/*.csv (model performance metrics)
+#   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03 - harmonized SOC, BD, carbon stocks)
 # OUTPUTS:
 #   - outputs/mmrv_reports/vm0033_verification_package.html
 #   - outputs/mmrv_reports/vm0033_summary_tables.xlsx
@@ -316,13 +316,13 @@ if (!is.null(rf_cv)) {
   rf_summary <- rf_cv %>%
     summarise(
       Model = "Random Forest",
-      `Mean CV RMSE (g/kg)` = round(mean(cv_rmse, na.rm = TRUE), 2),
+      `Mean CV RMSE (kg/m²)` = round(mean(cv_rmse, na.rm = TRUE), 3),
       `Mean CV R²` = round(mean(cv_r2, na.rm = TRUE), 3),
-      `Mean CV MAE (g/kg)` = round(mean(cv_mae, na.rm = TRUE), 2),
+      `Mean CV MAE (kg/m²)` = round(mean(cv_mae, na.rm = TRUE), 3),
       `Depths Modeled` = paste(unique(depth_cm), collapse = ", "),
       `Total Training Samples` = sum(n_samples, na.rm = TRUE)
     )
-  
+
   table3_performance <- rbind(table3_performance, rf_summary)
 }
 
@@ -330,13 +330,13 @@ if (!is.null(kriging_cv)) {
   kriging_summary <- kriging_cv %>%
     summarise(
       Model = "Kriging",
-      `Mean CV RMSE (g/kg)` = round(mean(cv_rmse, na.rm = TRUE), 2),
+      `Mean CV RMSE (kg/m²)` = round(mean(cv_rmse, na.rm = TRUE), 3),
       `Mean CV R²` = round(mean(cv_r2, na.rm = TRUE), 3),
-      `Mean CV MAE (g/kg)` = round(mean(cv_mae, na.rm = TRUE), 2),
+      `Mean CV MAE (kg/m²)` = round(mean(cv_mae, na.rm = TRUE), 3),
       `Depths Modeled` = paste(unique(depth_cm), collapse = ", "),
       `Total Training Samples` = sum(n_samples, na.rm = TRUE)
     )
-  
+
   table3_performance <- rbind(table3_performance, kriging_summary)
 }
 
@@ -370,7 +370,14 @@ if (!is.null(cores_harmonized)) {
       `SD SOC (g/kg)` = round(sd(soc_harmonized, na.rm = TRUE), 2),
       `Range SOC (g/kg)` = sprintf("%.1f - %.1f",
                                    min(soc_harmonized, na.rm = TRUE),
-                                   max(soc_harmonized, na.rm = TRUE))
+                                   max(soc_harmonized, na.rm = TRUE)),
+      `Mean BD (g/cm³)` = round(mean(bd_harmonized, na.rm = TRUE), 3),
+      `SD BD (g/cm³)` = round(sd(bd_harmonized, na.rm = TRUE), 3),
+      `Mean Carbon Stock (kg/m²)` = round(mean(carbon_stock_kg_m2, na.rm = TRUE), 3),
+      `SD Carbon Stock (kg/m²)` = round(sd(carbon_stock_kg_m2, na.rm = TRUE), 3),
+      `Range Carbon Stock (kg/m²)` = sprintf("%.3f - %.3f",
+                                              min(carbon_stock_kg_m2, na.rm = TRUE),
+                                              max(carbon_stock_kg_m2, na.rm = TRUE))
     ) %>%
     pivot_longer(everything(), names_to = "Metric", values_to = "Value",
                  values_transform = list(Value = as.character))
@@ -451,36 +458,45 @@ if (length(aoa_files) > 0) {
   }
 }
 
-# Check uncertainty levels
-variance_files <- list.files("outputs/predictions/uncertainty", 
-                            pattern = "variance_.*\\.tif$", 
-                            full.names = TRUE)
+# Check uncertainty levels from kriging and RF
+se_files <- c(
+  list.files("outputs/predictions/kriging", pattern = "^se_combined_.*\\.tif$", full.names = TRUE),
+  list.files("outputs/predictions/rf", pattern = "^se_combined_.*\\.tif$", full.names = TRUE)
+)
 
-if (length(variance_files) > 0) {
+if (length(se_files) > 0) {
   log_message("Processing prediction uncertainty...")
-  
-  for (var_file in variance_files) {
-    depth <- as.numeric(gsub(".*variance_(\\d+)cm.*", "\\1", basename(var_file)))
-    
-    var_raster <- rast(var_file)
-    se_raster <- sqrt(var_raster)
-    
+
+  for (se_file in se_files) {
+    depth <- as.numeric(gsub(".*se_combined.*?([0-9]+)cm.*", "\\1", basename(se_file)))
+    method <- ifelse(grepl("/rf/", se_file), "rf", "kriging")
+
+    se_raster <- rast(se_file)
+
     # Flag high uncertainty areas (SE > 30% of mean)
-    # This requires the prediction raster
-    pred_file <- gsub("variance", "soc", basename(var_file))
-    pred_path <- file.path("outputs/predictions/kriging", pred_file)
-    
-    if (file.exists(pred_path)) {
+    # Find corresponding carbon stock prediction file
+    if (method == "rf") {
+      pred_file <- sprintf("carbon_stock_rf_%dcm.tif", depth)
+      pred_path <- file.path("outputs/predictions/rf", pred_file)
+    } else {
+      # For kriging, need to find the right stratum file - try to match pattern
+      carbon_files <- list.files("outputs/predictions/kriging",
+                                 pattern = sprintf("carbon_stock_.*_%dcm\\.tif$", depth),
+                                 full.names = TRUE)
+      pred_path <- if (length(carbon_files) > 0) carbon_files[1] else NULL
+    }
+
+    if (!is.null(pred_path) && file.exists(pred_path)) {
       pred_raster <- rast(pred_path)
-      
+
       cv_raster <- (se_raster / pred_raster) * 100  # Coefficient of variation
-      
+
       cv_vals <- values(cv_raster, mat = FALSE)
       high_cv <- sum(cv_vals > 30, na.rm = TRUE)
       pct_high_cv <- 100 * high_cv / length(cv_vals[!is.na(cv_vals)])
-      
+
       flagged_areas <- rbind(flagged_areas, data.frame(
-        Flag_Type = "High Uncertainty",
+        Flag_Type = sprintf("High Uncertainty (%s)", method),
         Depth_cm = depth,
         N_Pixels = high_cv,
         Percent = pct_high_cv,
@@ -518,49 +534,30 @@ if (length(stock_maps) > 0) {
   log_message(sprintf("  Found %d stock maps from Module 06", length(stock_maps)))
 }
 
-# Stock rasters from Module 04 (kriging)
+# Carbon stock rasters from Module 04 (kriging)
 if ("kriging" %in% METHODS_AVAILABLE) {
-  kriging_stocks <- list.files("outputs/predictions/stocks/kriging",
-                               pattern = "stock_.*\\.tif$",
+  kriging_stocks <- list.files("outputs/predictions/kriging",
+                               pattern = "^carbon_stock_.*_[0-9]+cm\\.tif$",
                                full.names = TRUE)
   if (length(kriging_stocks) > 0) {
     spatial_exports <- c(spatial_exports, kriging_stocks)
-    log_message(sprintf("  Found %d kriging stock rasters", length(kriging_stocks)))
+    log_message(sprintf("  Found %d kriging carbon stock rasters", length(kriging_stocks)))
   }
 }
 
-# Stock rasters from Module 05 (RF)
+# Carbon stock rasters from Module 05 (RF)
 if ("rf" %in% METHODS_AVAILABLE) {
-  rf_stocks <- list.files("outputs/predictions/stocks/rf",
-                          pattern = "stock_rf_.*\\.tif$",
+  rf_stocks <- list.files("outputs/predictions/rf",
+                          pattern = "^carbon_stock_rf_[0-9]+cm\\.tif$",
                           full.names = TRUE)
   if (length(rf_stocks) > 0) {
     spatial_exports <- c(spatial_exports, rf_stocks)
-    log_message(sprintf("  Found %d RF stock rasters", length(rf_stocks)))
+    log_message(sprintf("  Found %d RF carbon stock rasters", length(rf_stocks)))
   }
 }
 
-# SOC prediction maps (RF)
-if ("rf" %in% METHODS_AVAILABLE) {
-  rf_soc_maps <- list.files("outputs/predictions/rf",
-                            pattern = "soc_rf_.*cm\\.tif$",
-                            full.names = TRUE)
-  if (length(rf_soc_maps) > 0) {
-    spatial_exports <- c(spatial_exports, rf_soc_maps)
-    log_message(sprintf("  Found %d RF SOC predictions", length(rf_soc_maps)))
-  }
-}
-
-# SOC prediction maps (kriging)
-if ("kriging" %in% METHODS_AVAILABLE) {
-  kriging_soc_maps <- list.files("outputs/predictions/kriging",
-                                 pattern = "soc_[0-9]+cm\\.tif$",
-                                 full.names = TRUE)
-  if (length(kriging_soc_maps) > 0) {
-    spatial_exports <- c(spatial_exports, kriging_soc_maps)
-    log_message(sprintf("  Found %d kriging SOC predictions", length(kriging_soc_maps)))
-  }
-}
+# Note: Carbon stock predictions are already included above
+# (Modules 04 and 05 now predict carbon stocks directly, not SOC)
 
 # AOA maps (if available from RF)
 aoa_maps <- list.files("outputs/predictions/rf",
@@ -609,15 +606,19 @@ metadata_content <- paste0(
   "Files Included:\n",
   "---------------\n",
   files_list,
-  "\n\nCarbon Stock Rasters:\n",
+  "\n\nVM0033 Aggregated Carbon Stocks (from Module 06):\n",
   "- carbon_stock_*_mean.tif: Mean carbon stocks (Mg C/ha)\n",
   "- carbon_stock_*_se.tif: Standard error (Mg C/ha)\n",
   "- carbon_stock_*_conservative.tif: VM0033 conservative estimates (lower 95% CI)\n",
-  "\nPrediction Rasters:\n",
-  "- soc_rf_*cm.tif: Random Forest SOC predictions (g/kg) at each depth\n",
+  "\nCarbon Stock Prediction Rasters:\n",
+  "- carbon_stock_*_*cm.tif: Kriging carbon stock predictions (kg/m²) at each VM0033 depth\n",
+  "- carbon_stock_rf_*cm.tif: Random Forest carbon stock predictions (kg/m²) at each VM0033 depth\n",
+  "- se_combined_*_*cm.tif: Standard error rasters (kg/m²)\n",
   "\nQuality Assurance:\n",
   "- aoa_*cm.tif: Area of Applicability (1 = inside, 0 = outside)\n",
   "- di_*cm.tif: Dissimilarity Index (higher = more extrapolation)\n",
+  "\nNote: Carbon stocks calculated from harmonized SOC and bulk density (Module 03)\n",
+  "      Workflow now predicts carbon stocks directly instead of SOC concentrations\n",
   "\nFor verification questions, see vm0033_verification_package.html\n"
 )
 
