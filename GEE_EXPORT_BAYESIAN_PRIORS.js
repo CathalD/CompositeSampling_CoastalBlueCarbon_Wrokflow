@@ -23,7 +23,7 @@
 
 // Study area boundary (draw polygon or import shapefile)
 // Example: Draw a polygon in GEE or import from assets
-var studyArea = ee.FeatureCollection('users/YOUR_USERNAME/YOUR_BOUNDARY');
+var studyArea = geometry
 // Or draw manually:
 // var studyArea = ee.Geometry.Rectangle([-123.5, 49.0, -123.0, 49.3]);
 
@@ -35,9 +35,15 @@ var EXPORT_FOLDER = 'BlueCarbon_Priors';  // Google Drive folder name
 // Sothe et al. 2022 BC Coast Assets
 // **USER MUST UPDATE THESE PATHS**
 // Format: 'users/YOUR_USERNAME/ASSET_NAME' or 'projects/PROJECT_ID/ASSET_NAME'
-var SOTHE_FOREST_BIOMASS = '';  // ← ENTER PATH HERE
-var SOTHE_SOIL_CARBON = '';     // ← ENTER PATH HERE
-var SOTHE_OTHER_BIOMASS = '';   // ← ENTER PATH HERE
+var SOTHE_FOREST_BIOMASS = 'ee.ImageCollection("projects/sat-io/open-datasets/carbon_stocks_ca/fc'; 
+
+// Soil Carbon to 1 meter depth
+var SOTHE_SOIL_CARBON = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1m250mkgm2version3'; 
+// Uncertainty of soil carbon at 1 meter depth
+var SOTHE_SOIL_CARBON_UNCERTAINTY = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1muncertainty250mkgm2version30';
+
+// Add other biomass (non-tree)
+/// Will have to remove other biomass parameter for now
 
 // VM0033 Standard Depths (midpoints in cm)
 var VM0033_DEPTHS = [7.5, 22.5, 40, 75];
@@ -382,7 +388,7 @@ if (useSothe) {
 print('═══════════════════════════════════════');
 print('EXPORT SETUP COMPLETE');
 print('═══════════════════════════════════════');
-print('Study Area:', studyArea.geometry().bounds());
+print('Study Area:', studyArea.bounds());
 print('Export Scale:', EXPORT_SCALE, 'meters');
 print('Export CRS:', EXPORT_CRS);
 print('VM0033 Depths:', VM0033_DEPTHS);
