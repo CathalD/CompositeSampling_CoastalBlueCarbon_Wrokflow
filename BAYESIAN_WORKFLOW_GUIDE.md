@@ -1,0 +1,594 @@
+# BAYESIAN WORKFLOW GUIDE (Part 4 - Optional)
+## Blue Carbon Monitoring - VM0033 Compliant
+
+**Purpose**: Combine prior knowledge (GEE global datasets) with field data for improved carbon stock estimates with reduced uncertainty.
+
+**Theory**: Bayesian updating combines prior knowledge with field observations:
+- **Prior**: Global/regional datasets (SoilGrids, Sothe et al. 2022)
+- **Likelihood**: Field-based predictions (RF/Kriging from Modules 04/05)
+- **Posterior**: Precision-weighted combination (best of both worlds)
+
+---
+
+## WORKFLOW OVERVIEW
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    BAYESIAN WORKFLOW (Part 4)                   │
+└─────────────────────────────────────────────────────────────────┘
+
+ GEE EXPORT                MODULE 00C              MODULE 01C
+┌──────────┐             ┌──────────┐            ┌──────────┐
+│ Export   │             │ Process  │            │ Neyman   │
+│ Priors   │────────────▶│ Priors   │───────────▶│ Sampling │
+│ from GEE │             │          │            │ Design   │
+└──────────┘             └──────────┘            └──────────┘
+                                                       │
+                                                       ▼
+                                              [Field Sampling]
+                                                       │
+                                                       ▼
+                                              Modules 01-05
+                                              (Standard Workflow)
+                                                       │
+                                                       ▼
+                                              MODULE 06C
+                                             ┌──────────┐
+                                             │Posterior │
+                                             │Estimation│
+                                             └──────────┘
+                                                  │
+                                                  ▼
+                                            Module 06 & 07
+                                          (Carbon Stocks & MMRV)
+```
+
+---
+
+## STEP 0: ENABLE BAYESIAN WORKFLOW
+
+### Edit Configuration
+**File**: `blue_carbon_config.R`
+
+```r
+# Enable Bayesian workflow
+USE_BAYESIAN <- TRUE
+
+# Enable Neyman optimal sampling
+USE_NEYMAN_SAMPLING <- TRUE
+
+# Uncertainty strata thresholds (CV %)
+UNCERTAINTY_LOW_THRESHOLD <- 10    # CV < 10% = low uncertainty
+UNCERTAINTY_HIGH_THRESHOLD <- 30   # CV > 30% = high uncertainty
+
+# Bayesian weighting method
+BAYESIAN_WEIGHT_METHOD <- "sqrt_samples"  # Options: "sqrt_samples", "linear", "fixed"
+BAYESIAN_TARGET_SAMPLES <- 30             # Target sample size for full field weight
+
+# Prior uncertainty inflation (conservative approach)
+PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
+```
+
+---
+
+## STEP 1: EXPORT PRIORS FROM GOOGLE EARTH ENGINE
+
+### File: `GEE_EXPORT_BAYESIAN_PRIORS.js`
+
+**Data Sources**:
+1. **SoilGrids 250m** - Global soil organic carbon (Poggio et al. 2021)
+2. **Sothe et al. 2022** - BC Coast forest biomass and soil carbon
+
+### Instructions:
+
+1. **Open Google Earth Engine Code Editor**
+   - Go to: https://code.earthengine.google.com/
+
+2. **Define Study Area**
+   ```javascript
+   // Option 1: Draw polygon manually
+   // Option 2: Import shapefile from Assets
+   // Option 3: Use coordinates
+   var studyArea = ee.Geometry.Rectangle([-123.5, 49.0, -123.0, 49.3]);
+   ```
+
+3. **Set Export Parameters**
+   ```javascript
+   var EXPORT_SCALE = 250;  // Resolution in meters
+   var EXPORT_CRS = 'EPSG:3005';  // BC Albers
+   var EXPORT_FOLDER = 'BlueCarbon_Priors';  // Google Drive folder
+   ```
+
+4. **Update Asset Paths** (if needed)
+   ```javascript
+   var SOTHE_FOREST_BIOMASS = 'projects/sat-io/open-datasets/carbon_stocks_ca/forest_carbon_2019';
+   var SOTHE_SOIL_CARBON = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1m250mkgm2version3';
+   ```
+
+5. **Run Script**
+   - Click "Run" button
+   - Wait for Tasks to appear in Tasks tab
+
+6. **Export All Tasks**
+   - Go to Tasks tab (top right)
+   - Click "RUN" for each task
+   - Files will export to Google Drive
+
+### Expected GEE Exports:
+
+**Prior Mean Files** (8 files):
+- `soc_prior_mean_7.5cm.tif`
+- `soc_prior_mean_22.5cm.tif`
+- `soc_prior_mean_40cm.tif`
+- `soc_prior_mean_75cm.tif`
+
+**Prior Uncertainty Files** (8 files):
+- `soc_prior_se_7.5cm.tif`
+- `soc_prior_se_22.5cm.tif`
+- `soc_prior_se_40cm.tif`
+- `soc_prior_se_75cm.tif`
+
+**Optional**:
+- `uncertainty_strata.tif` (for stratified sampling)
+
+### Download from Google Drive:
+
+1. Go to Google Drive
+2. Find folder: `BlueCarbon_Priors/`
+3. Download all `.tif` files
+4. Place in: `data_prior/gee_exports/`
+
+**Directory Structure**:
+```
+CompositeSampling_CoastalBlueCarbon_Wrokflow/
+├── data_prior/
+│   └── gee_exports/
+│       ├── soc_prior_mean_7.5cm.tif
+│       ├── soc_prior_mean_22.5cm.tif
+│       ├── soc_prior_mean_40cm.tif
+│       ├── soc_prior_mean_75cm.tif
+│       ├── soc_prior_se_7.5cm.tif
+│       ├── soc_prior_se_22.5cm.tif
+│       ├── soc_prior_se_40cm.tif
+│       ├── soc_prior_se_75cm.tif
+│       └── uncertainty_strata.tif (optional)
+```
+
+---
+
+## STEP 2: MODULE 00C - PROCESS BAYESIAN PRIORS
+
+### File: `00c_bayesian_prior_setup_bluecarbon.R`
+
+**Purpose**: Process and align GEE-exported priors to study area
+
+### Prerequisites:
+- ✓ GEE exports downloaded to `data_prior/gee_exports/`
+- ✓ `USE_BAYESIAN = TRUE` in config
+- ✓ Study area boundary (optional): `data_raw/study_area_boundary.shp`
+
+### Run Module:
+```r
+source("00c_bayesian_prior_setup_bluecarbon.R")
+```
+
+### What It Does:
+1. Loads GEE-exported prior maps
+2. Reprojects to EPSG:3005 (BC Albers)
+3. Clips to study area boundary (if provided)
+4. Aligns all rasters to common grid
+5. Inflates uncertainty by `PRIOR_UNCERTAINTY_INFLATION` factor (conservative)
+6. Creates metadata CSV with source information
+
+### Inputs:
+```
+data_prior/gee_exports/
+├── soc_prior_mean_*.tif (from GEE)
+├── soc_prior_se_*.tif (from GEE)
+└── uncertainty_strata.tif (optional, from GEE)
+```
+
+### Outputs:
+```
+data_prior/
+├── soc_prior_mean_7.5cm.tif     ← Processed prior mean (g/kg)
+├── soc_prior_mean_22.5cm.tif
+├── soc_prior_mean_40cm.tif
+├── soc_prior_mean_75cm.tif
+├── soc_prior_se_7.5cm.tif       ← Processed prior SE (g/kg)
+├── soc_prior_se_22.5cm.tif
+├── soc_prior_se_40cm.tif
+├── soc_prior_se_75cm.tif
+├── uncertainty_strata.tif       ← Uncertainty strata (1=low, 2=med, 3=high)
+└── prior_metadata.csv           ← Source info and statistics
+```
+
+### Expected Output:
+```
+=== MODULE 00C: BAYESIAN PRIOR SETUP ===
+Project: Chemainus Estuary Blue Carbon
+Bayesian workflow enabled ✓
+
+Checking for GEE exported files...
+Found 4 prior mean files:
+  - soc_prior_mean_7.5cm.tif
+  - soc_prior_mean_22.5cm.tif
+  - soc_prior_mean_40cm.tif
+  - soc_prior_mean_75cm.tif
+
+Processing prior maps for VM0033 standard depths...
+  Processing depth: 7.5 cm
+    Loaded mean: soc_prior_mean_7.5cm.tif
+    Loaded SE: soc_prior_se_7.5cm.tif
+    Reprojected to EPSG:3005
+    Clipped to study area
+    Saved: data_prior/soc_prior_mean_7.5cm.tif
+
+Prior processing complete!
+Created metadata file: data_prior/prior_metadata.csv
+```
+
+---
+
+## STEP 3: MODULE 01C - BAYESIAN SAMPLING DESIGN
+
+### File: `01c_bayesian_sampling_design_bluecarbon.R`
+
+**Purpose**: Design optimal sampling using **Neyman allocation**
+
+**Theory**: Allocate more samples to high-uncertainty areas
+```
+n_h ∝ N_h × σ_h
+
+Where:
+- n_h = samples allocated to stratum h
+- N_h = area of stratum h (ha)
+- σ_h = standard deviation in stratum h (from priors)
+```
+
+### Prerequisites:
+- ✓ Module 00C completed (priors processed)
+- ✓ `USE_NEYMAN_SAMPLING = TRUE` in config
+
+### Run Module:
+```r
+source("01c_bayesian_sampling_design_bluecarbon.R")
+```
+
+### What It Does:
+1. Loads processed priors from Module 00C
+2. Calculates coefficient of variation (CV = SE/mean × 100)
+3. Creates uncertainty strata based on CV thresholds:
+   - Stratum 1: CV < 10% (low uncertainty)
+   - Stratum 2: 10% ≤ CV < 30% (medium uncertainty)
+   - Stratum 3: CV ≥ 30% (high uncertainty)
+4. Applies Neyman allocation formula
+5. Generates spatially balanced sample points (SSP)
+6. Creates field-ready sampling locations CSV
+
+### Inputs:
+```
+data_prior/
+├── soc_prior_mean_7.5cm.tif (from Module 00C)
+├── soc_prior_se_7.5cm.tif (from Module 00C)
+└── uncertainty_strata.tif (optional)
+```
+
+### Outputs:
+```
+├── sampling_locations_neyman.csv        ← GPS coordinates for field sampling
+├── sampling_allocation_neyman.csv       ← Samples per stratum
+├── sampling_map_neyman.png             ← Map visualization
+└── data_processed/neyman_strata.tif    ← Uncertainty strata raster
+```
+
+### Example Output - `sampling_allocation_neyman.csv`:
+```csv
+stratum,description,area_ha,mean_cv_pct,neyman_allocation,buffer_allocation,locations_generated
+1,Low Uncertainty,45.2,7.3,8,10,10
+2,Medium Uncertainty,102.5,18.5,22,27,27
+3,High Uncertainty,67.8,42.1,20,24,24
+ALL,Total Study Area,215.5,23.1,50,61,61
+```
+
+### Example Output - `sampling_locations_neyman.csv`:
+```csv
+point_id,stratum,longitude,latitude,utm_east,utm_north,accessibility_notes
+NEYM_001,3,-123.4567,49.1234,512345,5445678,High uncertainty area - priority
+NEYM_002,2,-123.4523,49.1298,512456,5446123,Medium uncertainty
+NEYM_003,3,-123.4489,49.1156,512567,5445234,High uncertainty area - priority
+...
+```
+
+**Field Use**: Take `sampling_locations_neyman.csv` to the field with a GPS device.
+
+---
+
+## STEP 4: STANDARD WORKFLOW (MODULES 01-05)
+
+**After completing Neyman sampling design**, proceed with standard workflow:
+
+1. **Module 01**: Import field data collected at Neyman-allocated locations
+2. **Module 02**: QA/QC field data
+3. **Module 03**: Depth harmonization (SOC, BD, carbon stocks)
+4. **Module 04**: Kriging predictions (optional)
+5. **Module 05**: Random Forest predictions (likelihood maps)
+
+**Note**: These modules run exactly as before - the Neyman allocation just optimizes WHERE you sample, not how you process the data.
+
+---
+
+## STEP 5: MODULE 06C - BAYESIAN POSTERIOR ESTIMATION
+
+### File: `06c_bayesian_posterior_estimation_bluecarbon.R`
+
+**Purpose**: Combine priors with field data to generate posterior estimates
+
+**Theory**: Precision-weighted Bayesian update
+```
+Precision (τ) = 1 / variance (σ²)
+
+μ_posterior = (τ_prior × μ_prior + τ_field × μ_field) / (τ_prior + τ_field)
+σ²_posterior = 1 / (τ_prior + τ_field)
+
+Result: Lower uncertainty than either prior or field data alone!
+```
+
+### Prerequisites:
+- ✓ Module 00C completed (priors)
+- ✓ Modules 01-05 completed (field data + predictions)
+- ✓ `USE_BAYESIAN = TRUE` in config
+
+### Run Module:
+```r
+source("06c_bayesian_posterior_estimation_bluecarbon.R")
+```
+
+### What It Does:
+1. Loads prior maps from Module 00C
+2. Loads likelihood maps (RF or Kriging) from Module 05
+3. Calculates sample density field (nearby samples = higher field weight)
+4. Applies precision-weighted Bayesian update
+5. Generates posterior mean and SE maps
+6. Calculates information gain (uncertainty reduction)
+7. Creates comparative visualizations
+
+### Inputs:
+```
+data_prior/
+├── soc_prior_mean_*.tif (from Module 00C)
+└── soc_prior_se_*.tif (from Module 00C)
+
+outputs/predictions/rf/
+├── carbon_stock_rf_*cm.tif (from Module 05)
+└── se_combined_*cm.tif (from Module 05)
+
+OR
+
+outputs/predictions/kriging/
+├── carbon_stock_*.tif (from Module 04)
+└── se_combined_*.tif (from Module 04)
+```
+
+### Outputs:
+```
+outputs/predictions/posterior/
+├── soc_posterior_mean_7.5cm.tif        ← Posterior mean (kg/m²)
+├── soc_posterior_mean_22.5cm.tif
+├── soc_posterior_mean_40cm.tif
+├── soc_posterior_mean_75cm.tif
+├── soc_posterior_se_7.5cm.tif          ← Posterior SE (kg/m²)
+├── soc_posterior_se_22.5cm.tif
+├── soc_posterior_se_40cm.tif
+├── soc_posterior_se_75cm.tif
+└── soc_posterior_conservative_*.tif    ← Conservative (lower 95% CI)
+
+diagnostics/bayesian/
+├── information_gain_7.5cm.tif          ← Uncertainty reduction map
+├── information_gain_22.5cm.tif
+├── information_gain_40cm.tif
+├── information_gain_75cm.tif
+├── uncertainty_reduction.csv           ← Summary statistics
+└── prior_likelihood_posterior_comparison.png  ← Visual comparison
+```
+
+### Expected Console Output:
+```
+=== MODULE 06C: BAYESIAN POSTERIOR ESTIMATION ===
+Project: Chemainus Estuary Blue Carbon
+Bayesian posterior estimation enabled ✓
+
+Loading field sample locations...
+Loaded 61 sample locations
+
+Checking for likelihood maps...
+Using RF for likelihood
+
+Loading Bayesian priors...
+Found 4 prior depth layers
+
+Processing depth: 7.5 cm
+  Prior mean: 45.2 kg/m², SE: 8.3 kg/m²
+  Field mean: 52.1 kg/m², SE: 6.1 kg/m²
+  Posterior mean: 49.8 kg/m², SE: 4.9 kg/m²
+  ✓ Uncertainty reduced by 40.7%
+
+Processing depth: 22.5 cm
+  Prior mean: 38.7 kg/m², SE: 7.1 kg/m²
+  Field mean: 44.3 kg/m², SE: 5.8 kg/m²
+  Posterior mean: 42.1 kg/m², SE: 4.5 kg/m²
+  ✓ Uncertainty reduced by 36.6%
+
+Bayesian posterior estimation complete!
+Saved posterior maps: outputs/predictions/posterior/
+```
+
+### Key Metrics - `uncertainty_reduction.csv`:
+```csv
+depth_cm,prior_mean,prior_se,field_mean,field_se,posterior_mean,posterior_se,uncertainty_reduction_pct,information_gain
+7.5,45.2,8.3,52.1,6.1,49.8,4.9,40.7,High
+22.5,38.7,7.1,44.3,5.8,42.1,4.5,36.6,High
+40,31.2,6.8,36.5,7.2,33.9,4.8,29.4,Medium
+75,22.1,5.9,24.8,8.1,23.2,4.7,20.3,Medium
+```
+
+**Interpretation**:
+- **High information gain**: Prior + field data combined well (>30% uncertainty reduction)
+- **Medium information gain**: Moderate improvement (20-30% reduction)
+- **Low information gain**: Prior not very informative (<20% reduction)
+
+---
+
+## STEP 6: CONTINUE WITH STANDARD MODULES
+
+After Module 06C, use posterior maps in place of RF/Kriging predictions:
+
+### Module 06: Carbon Stock Calculation
+- Modify to use `outputs/predictions/posterior/` instead of RF/Kriging
+- Aggregate posterior maps to VM0033 intervals
+- Calculate conservative estimates
+
+### Module 07: MMRV Reporting
+- Generate VM0033 verification package
+- Include Bayesian methodology in documentation
+- Report uncertainty reduction as quality metric
+
+---
+
+## BAYESIAN WORKFLOW SUMMARY
+
+### Required Files Checklist:
+
+**From Google Earth Engine**:
+- [ ] `soc_prior_mean_7.5cm.tif`
+- [ ] `soc_prior_mean_22.5cm.tif`
+- [ ] `soc_prior_mean_40cm.tif`
+- [ ] `soc_prior_mean_75cm.tif`
+- [ ] `soc_prior_se_7.5cm.tif`
+- [ ] `soc_prior_se_22.5cm.tif`
+- [ ] `soc_prior_se_40cm.tif`
+- [ ] `soc_prior_se_75cm.tif`
+- [ ] `uncertainty_strata.tif` (optional)
+
+**From Standard Workflow**:
+- [ ] Field data (Modules 01-03)
+- [ ] RF or Kriging predictions (Modules 04-05)
+- [ ] Study area boundary (optional)
+
+### Expected Benefits:
+
+1. **Optimized Sampling** (Module 01C):
+   - Target high-uncertainty areas
+   - Reduce field costs
+   - Maximize information per sample
+
+2. **Improved Estimates** (Module 06C):
+   - Lower uncertainty than field data alone
+   - Spatially complete coverage (no gaps)
+   - Better predictions in under-sampled areas
+
+3. **VM0033 Compliance**:
+   - Conservative estimates (lower 95% CI)
+   - Documented methodology
+   - Quantified uncertainty reduction
+
+### When to Use Bayesian Workflow:
+
+**✓ Use Bayesian When**:
+- Prior data available and reasonably accurate
+- Limited field sampling budget
+- Need to optimize sample allocation
+- Want to reduce uncertainty
+- Study area partially inaccessible
+
+**✗ Skip Bayesian When**:
+- No reliable prior data exists
+- Prior data known to be biased/inaccurate
+- Sufficient field samples for good coverage
+- Simple study area with homogeneous conditions
+
+---
+
+## TROUBLESHOOTING
+
+### Issue: "No prior files found in data_prior/gee_exports/"
+**Solution**:
+1. Ensure GEE exports completed
+2. Downloaded all .tif files from Google Drive
+3. Placed in correct directory: `data_prior/gee_exports/`
+
+### Issue: "Bayesian workflow is disabled"
+**Solution**: Edit `blue_carbon_config.R`:
+```r
+USE_BAYESIAN <- TRUE
+```
+
+### Issue: "Prior and field data don't align"
+**Solution**: Module 00C automatically reprojects and aligns. Check:
+1. CRS settings in config (PROCESSING_CRS)
+2. Study area boundary matches field extent
+
+### Issue: "Information gain is low (<20%)"
+**Possible Causes**:
+1. Prior data inaccurate for your region
+2. Prior uncertainty underestimated
+3. Field data uncertainty is very low
+**Solution**: Increase `PRIOR_UNCERTAINTY_INFLATION` in config
+
+### Issue: "Posterior estimates seem wrong"
+**Check**:
+1. Prior units (should be g/kg for SOC or kg/m² for carbon stocks)
+2. Field prediction units match prior units
+3. Sample density calculation working correctly
+4. Weighting method appropriate (`BAYESIAN_WEIGHT_METHOD`)
+
+---
+
+## REFERENCES
+
+**Data Sources**:
+- Poggio, L., et al. (2021). SoilGrids 2.0: Global soil information. *Soil*, 7, 217-240.
+- Sothe, C., et al. (2022). Large soil carbon storage in terrestrial ecosystems of Canada. *Global Biogeochemical Cycles*, 36(4).
+
+**Methodology**:
+- Neyman, J. (1934). On the two different aspects of the representative method. *Journal of the Royal Statistical Society*, 97(4), 558-625.
+- Gelman, A., et al. (2013). *Bayesian Data Analysis*. CRC Press.
+
+**VM0033 Standard**:
+- Verra. (2015). VM0033 Methodology for Tidal Wetland and Seagrass Restoration. Version 2.0.
+
+---
+
+## QUICK COMMAND SEQUENCE
+
+```r
+# 1. Configure
+source("blue_carbon_config.R")
+# Set USE_BAYESIAN <- TRUE
+
+# 2. Process priors (after GEE export)
+source("00c_bayesian_prior_setup_bluecarbon.R")
+
+# 3. Design sampling
+source("01c_bayesian_sampling_design_bluecarbon.R")
+
+# 4. Standard workflow with field data
+source("01_import_field_data.R")
+source("02_qaqc_field_data.R")
+source("03_depth_harmonization_bluecarbon.R")
+source("04_raster_predictions_kriging_bluecarbon.R")  # or skip
+source("05_raster_predictions_rf_bluecarbon.R")
+
+# 5. Bayesian posterior
+source("06c_bayesian_posterior_estimation_bluecarbon.R")
+
+# 6. Continue standard workflow
+source("06_carbon_stock_calculation_bluecarbon.R")  # may need modification
+source("07_mmrv_reporting_bluecarbon.R")
+```
+
+---
+
+**End of Bayesian Workflow Guide**
+
+For questions or issues, refer to module-specific comments or consult the VM0033 methodology documentation.
