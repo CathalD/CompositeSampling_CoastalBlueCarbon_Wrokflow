@@ -101,19 +101,31 @@ log_message("Converting carbon stocks to CO2e emissions...")
 # Conversion factor: C to CO2 (molecular weight ratio: 44/12)
 C_TO_CO2 <- 44 / 12
 
-# Calculate emissions reductions
+# Calculate emissions reductions for all 4 VM0033 intervals + total
 emissions_reductions <- additionality %>%
   mutate(
-    # Convert Mg C/ha to tonnes CO2e/ha
-    co2e_surface_mean = delta_surface_mean * C_TO_CO2,
-    co2e_deep_mean = delta_deep_mean * C_TO_CO2,
-    co2e_total_mean = delta_total_mean * C_TO_CO2,
+    # Convert Mg C/ha to tonnes CO2e/ha for all 4 VM0033 intervals
+    # Interval 1: 0-15cm
+    co2e_0_15_mean = delta_0_15_mean * C_TO_CO2,
+    co2e_0_15_conservative = delta_0_15_conservative * C_TO_CO2,
 
-    # Conservative estimates (95% CI lower bound)
-    co2e_surface_conservative = delta_surface_conservative * C_TO_CO2,
+    # Interval 2: 15-30cm
+    co2e_15_30_mean = delta_15_30_mean * C_TO_CO2,
+    co2e_15_30_conservative = delta_15_30_conservative * C_TO_CO2,
+
+    # Interval 3: 30-50cm
+    co2e_30_50_mean = delta_30_50_mean * C_TO_CO2,
+    co2e_30_50_conservative = delta_30_50_conservative * C_TO_CO2,
+
+    # Interval 4: 50-100cm
+    co2e_50_100_mean = delta_50_100_mean * C_TO_CO2,
+    co2e_50_100_conservative = delta_50_100_conservative * C_TO_CO2,
+
+    # Total 0-100cm
+    co2e_total_mean = delta_total_mean * C_TO_CO2,
     co2e_total_conservative = delta_total_conservative * C_TO_CO2,
 
-    # Uncertainty in CO2e
+    # Uncertainty in CO2e (total)
     co2e_total_se = delta_total_se * C_TO_CO2,
     co2e_total_ci_lower = delta_total_ci_lower * C_TO_CO2,
     co2e_total_ci_upper = delta_total_ci_upper * C_TO_CO2
@@ -263,9 +275,12 @@ addWorksheet(wb, "3_Emission_Reductions")
 emissions_table <- emissions_reductions %>%
   select(
     Stratum = stratum,
-    `Surface (0-30 cm) CO2e/ha` = co2e_surface_mean,
-    `Deep (30-100 cm) CO2e/ha` = co2e_deep_mean,
-    `Total (0-100 cm) CO2e/ha` = co2e_total_mean,
+    # All 4 VM0033 intervals
+    `Interval 1 (0-15cm) CO2e/ha` = co2e_0_15_mean,
+    `Interval 2 (15-30cm) CO2e/ha` = co2e_15_30_mean,
+    `Interval 3 (30-50cm) CO2e/ha` = co2e_30_50_mean,
+    `Interval 4 (50-100cm) CO2e/ha` = co2e_50_100_mean,
+    `Total (0-100cm) CO2e/ha` = co2e_total_mean,
     `Total SE` = co2e_total_se,
     `95% CI Lower` = co2e_total_ci_lower,
     `95% CI Upper` = co2e_total_ci_upper,
@@ -292,15 +307,16 @@ uncertainty_table <- emissions_reductions %>%
     `Baseline SE` = baseline_total_se,
     `Project SE` = project_total_se,
     `Difference SE` = delta_total_se,
-    `Relative Uncertainty (%)` = pct_change_total,
-    `Cohen's d (Effect Size)` = cohens_d_surface,
     `T-statistic` = t_stat_total,
-    `p-value` = p_value_total,
-    `95% CI Width` = delta_total_se
+    `p-value` = p_value_total
   ) %>%
   mutate(
+    # Calculate derived metrics
     `95% CI Width` = 2 * 1.96 * `Difference SE`,
-    `Relative Uncertainty (%)` = 100 * `Difference SE` / abs(emissions_reductions$delta_total_mean)
+    `Relative Uncertainty (%)` = 100 * `Difference SE` / abs(emissions_reductions$delta_total_mean),
+    # Cohen's d effect size for total 0-100cm
+    `Cohen's d (Effect Size)` = emissions_reductions$delta_total_mean /
+      sqrt((emissions_reductions$baseline_total_se^2 + emissions_reductions$project_total_se^2) / 2)
   )
 
 writeData(wb, "4_Uncertainty_Analysis", uncertainty_table, startRow = 2)
@@ -309,7 +325,7 @@ writeData(wb, "4_Uncertainty_Analysis", uncertainty_table, startRow = 2)
 # TABLE 5: TEMPORAL TRENDS & PERMANENCE
 # ========================================================================
 
-if (nrow(temporal_trends) > 0) {
+if (!is.null(temporal_trends) && nrow(temporal_trends) > 0) {
   addWorksheet(wb, "5_Temporal_Trends")
 
   trends_table <- temporal_trends %>%
@@ -319,11 +335,17 @@ if (nrow(temporal_trends) > 0) {
       `First Year` = first_year,
       `Last Year` = last_year,
       `Time Span (years)` = year_span,
-      `Carbon at t0 (Mg C/ha)` = carbon_t0,
-      `Carbon at tn (Mg C/ha)` = carbon_tn,
+      # Total 0-100cm (main metric)
+      `Total Carbon at t0 (Mg C/ha)` = carbon_total_t0,
+      `Total Carbon at tn (Mg C/ha)` = carbon_total_tn,
       `Total Change (Mg C/ha)` = total_change,
-      `Sequestration Rate (Mg C/ha/yr)` = rate_Mg_ha_yr,
-      `Percent Change` = pct_change
+      `Total Sequestration Rate (Mg C/ha/yr)` = rate_total_Mg_ha_yr,
+      `Total Percent Change` = pct_change_total,
+      # Interval-specific rates
+      `Rate 0-15cm (Mg C/ha/yr)` = rate_0_15_Mg_ha_yr,
+      `Rate 15-30cm (Mg C/ha/yr)` = rate_15_30_Mg_ha_yr,
+      `Rate 30-50cm (Mg C/ha/yr)` = rate_30_50_Mg_ha_yr,
+      `Rate 50-100cm (Mg C/ha/yr)` = rate_50_100_Mg_ha_yr
     )
 
   writeData(wb, "5_Temporal_Trends", trends_table, startRow = 2)
@@ -483,17 +505,17 @@ datatable(emissions %%>%%
 ## Temporal Trends
 
 ```{r temporal-trends}
-if (nrow(temporal_trends) > 0) {
+if (!is.null(temporal_trends) && nrow(temporal_trends) > 0) {
   datatable(temporal_trends %%>%%
     select(Stratum = stratum,
            Scenario = scenario,
            `Years` = years,
            `Time Span` = year_span,
-           `Sequestration Rate (Mg C/ha/yr)` = rate_Mg_ha_yr,
+           `Sequestration Rate (Mg C/ha/yr)` = rate_total_Mg_ha_yr,
            `Total Change (Mg C/ha)` = total_change,
-           `Percent Change` = pct_change),
+           `Percent Change` = pct_change_total),
     options = list(pageLength = 10),
-    caption = "Temporal Trends in Carbon Stocks")
+    caption = "Temporal Trends in Total Carbon Stocks (0-100cm)")
 }
 ```
 
