@@ -94,11 +94,12 @@ var SOTHE_SOIL_CARBON_UNCERTAINTY = 'projects/northstarlabs/assets/McMasterWWFCa
 var SOTHE_OTHER_BIOMASS = '';
 
 // VM0033 Standard Depth Intervals (in cm)
+// Midpoint depths for VM0033: 7.5, 22.5, 40, 75 cm
 var VM0033_INTERVALS = {
-  '0-15': {min: 0, max: 15},
-  '15-30': {min: 15, max: 30},
-  '30-50': {min: 30, max: 50},
-  '50-100': {min: 50, max: 100}
+  '0-15': {min: 0, max: 15, midpoint: 7.5},
+  '15-30': {min: 15, max: 30, midpoint: 22.5},
+  '30-50': {min: 30, max: 50, midpoint: 40},
+  '50-100': {min: 50, max: 100, midpoint: 75}
 };
 
 // SoilGrids depth intervals (in cm)
@@ -384,47 +385,110 @@ var uncertainty_strata = ee.Image(0)
 print('Uncertainty strata: 1=Low (CV<15%), 2=Medium (15-30%), 3=High (CV≥30%)');
 
 // ============================================================================
-// OPTIONAL: BLEND WITH SOTHE ET AL. 2022 (IF AVAILABLE)
+// BLEND WITH SOTHE ET AL. 2022 FOR TOTAL 0-100cm STOCK (IF AVAILABLE)
 // ============================================================================
+// STRATEGY: Blend total 0-100cm stock from SoilGrids with Sothe et al. 1m total
+//           Then apply scaling factor proportionally to all depth intervals
 
 if (useSothe && sothe_soil !== null) {
-  print('Blending SoilGrids with Sothe et al. 2022 soil carbon...');
-  print('NOTE: Sothe soil carbon is to 1m depth. Blending with 50-100cm interval.');
+  print('═══════════════════════════════════════');
+  print('BLENDING STRATEGY FOR TOTAL 0-100cm CARBON STOCK');
+  print('═══════════════════════════════════════');
+  print('Combining SoilGrids (global) with Sothe et al. 2022 (BC Coast regional)');
+  print('Method: Precision-weighted blending of 0-100cm totals, then proportional scaling');
 
-  // Sothe et al. provides soil carbon to 1m in kg/m²
-  // We can blend this with our 50-100 cm layer if we want regional refinement
-  // Simple approach: precision-weighted average where both exist
-  
+  // Step 1: Calculate SoilGrids total 0-100cm stock
+  var soilgrids_total_0_100 = vm0033_stocks['0-15']
+    .add(vm0033_stocks['15-30'])
+    .add(vm0033_stocks['30-50'])
+    .add(vm0033_stocks['50-100'])
+    .rename('soilgrids_total_0_100cm');
+
+  // Calculate SoilGrids total SE using error propagation: SE_total = sqrt(SE1² + SE2² + SE3² + SE4²)
+  var soilgrids_total_se = vm0033_stocks_se['0-15'].pow(2)
+    .add(vm0033_stocks_se['15-30'].pow(2))
+    .add(vm0033_stocks_se['30-50'].pow(2))
+    .add(vm0033_stocks_se['50-100'].pow(2))
+    .sqrt()
+    .rename('soilgrids_total_se_0_100cm');
+
+  print('Step 1: Calculated SoilGrids total 0-100cm stock by summing all intervals');
+
+  // Step 2: Blend SoilGrids total with Sothe et al. total (both 0-100cm)
   if (sothe_soil_unc !== null) {
-    // Precision-weighted average: w₁ = 1/SE₁², w₂ = 1/SE₂²
-    // Blended = (w₁×V₁ + w₂×V₂) / (w₁ + w₂)
-    
-    var weight_soilgrids = vm0033_stocks_se['50-100'].pow(-2);
+    // Precision-weighted average: w = 1/SE²
+    var weight_soilgrids = soilgrids_total_se.pow(-2);
     var weight_sothe = sothe_soil_unc.pow(-2);
-    
-    var blended_stock = vm0033_stocks['50-100'].multiply(weight_soilgrids)
+
+    var blended_total = soilgrids_total_0_100.multiply(weight_soilgrids)
       .add(sothe_soil.multiply(weight_sothe))
       .divide(weight_soilgrids.add(weight_sothe))
-      .rename('soc_stock_50_100cm_blended');
-    
-    // Calculate blended SE: 1/SE² = 1/SE₁² + 1/SE₂²
-    var blended_se = weight_soilgrids.add(weight_sothe)
+      .rename('blended_total_0_100cm');
+
+    // Blended total SE
+    var blended_total_se = weight_soilgrids.add(weight_sothe)
       .pow(-0.5)
-      .rename('soc_se_50_100cm_blended');
-    
-    // Store blended versions
-    vm0033_stocks['50-100-blended'] = blended_stock;
-    vm0033_stocks_se['50-100-blended'] = blended_se;
-    
-    print('Created blended 50-100cm layer using precision-weighted average');
+      .rename('blended_total_se_0_100cm');
+
+    print('Step 2: Blended totals using precision-weighted average');
+    print('  Formula: Blended = (w_sg × Total_sg + w_sothe × Total_sothe) / (w_sg + w_sothe)');
+
+    // Step 3: Calculate scaling factor
+    var scaling_factor = blended_total.divide(soilgrids_total_0_100);
+
+    print('Step 3: Calculated scaling factor = Blended_total / SoilGrids_total');
+
+    // Step 4: Apply scaling factor to ALL depth intervals proportionally
+    print('Step 4: Applying scaling factor to all depth intervals...');
+
+    var intervals = ['0-15', '15-30', '30-50', '50-100'];
+    intervals.forEach(function(interval) {
+      // Scale the mean
+      var scaled_mean = vm0033_stocks[interval].multiply(scaling_factor);
+      vm0033_stocks[interval] = scaled_mean;
+
+      // Scale the SE (uncertainty also scales proportionally)
+      var scaled_se = vm0033_stocks_se[interval].multiply(scaling_factor);
+      vm0033_stocks_se[interval] = scaled_se;
+
+      var midpoint = VM0033_INTERVALS[interval].midpoint;
+      print('  ✓ Scaled ' + midpoint + ' cm depth (interval ' + interval + ' cm)');
+    });
+
+    print('');
+    print('✓ All depth intervals adjusted using SoilGrids + Sothe et al. blending');
+    print('  Expected: Regional accuracy from Sothe et al. distributed across all depths');
+    print('  Expected: Depth pattern preserved from SoilGrids');
+    print('  Expected: Reduced uncertainty compared to SoilGrids alone');
+
   } else {
     // Simple average if uncertainty not available
-    var blended_simple = vm0033_stocks['50-100'].blend(sothe_soil)
-      .rename('soc_stock_50_100cm_blended');
-    vm0033_stocks['50-100-blended'] = blended_simple;
-    
-    print('Created blended 50-100cm layer using simple average (no uncertainty)');
+    print('⚠ Sothe uncertainty not available - using simple average of totals');
+
+    var blended_total = soilgrids_total_0_100.add(sothe_soil).divide(2);
+    var scaling_factor = blended_total.divide(soilgrids_total_0_100);
+
+    var intervals = ['0-15', '15-30', '30-50', '50-100'];
+    intervals.forEach(function(interval) {
+      vm0033_stocks[interval] = vm0033_stocks[interval].multiply(scaling_factor);
+      vm0033_stocks_se[interval] = vm0033_stocks_se[interval].multiply(scaling_factor);
+    });
+
+    print('✓ Applied simple average scaling to all depth intervals');
   }
+
+  print('');
+  print('FINAL PRIOR STRATEGY:');
+  print('  • SoilGrids provides depth distribution pattern');
+  print('  • Sothe et al. provides regional total correction (0-100cm)');
+  print('  • All 4 depth intervals scaled proportionally by blended total');
+  print('  7.5 cm (0-15 cm): SoilGrids pattern × Regional scaling');
+  print('  22.5 cm (15-30 cm): SoilGrids pattern × Regional scaling');
+  print('  40 cm (30-50 cm): SoilGrids pattern × Regional scaling');
+  print('  75 cm (50-100 cm): SoilGrids pattern × Regional scaling');
+  print('═══════════════════════════════════════');
+} else {
+  print('Sothe et al. 2022 data not available - using SoilGrids only for all depths');
 }
 
 // ============================================================================
@@ -507,16 +571,18 @@ print('════════════════════════�
 
 var VM0033_EXPORT_INTERVALS = ['0-15', '15-30', '30-50', '50-100'];
 
-// Export carbon stocks, SE, and CV for each VM0033 interval
+// Export carbon stocks and SE for each VM0033 interval
+// Using VM0033 midpoint depths in filenames: 7.5, 22.5, 40, 75 cm
 VM0033_EXPORT_INTERVALS.forEach(function(interval) {
-  var intervalStr = interval.replace('-', '_');
+  var midpoint = VM0033_INTERVALS[interval].midpoint;
 
-  // Export Mean Stock (kg/m²)
+  // Export Mean Carbon Stock (kg/m²)
+  // File naming: carbon_stock_prior_mean_7.5cm.tif
   Export.image.toDrive({
     image: vm0033_stocks[interval].clip(studyArea),
-    description: 'soc_stock_' + intervalStr + 'cm',
+    description: 'carbon_stock_prior_mean_' + midpoint + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_stock_' + intervalStr + 'cm_kgm2',
+    fileNamePrefix: 'carbon_stock_prior_mean_' + midpoint + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
@@ -524,56 +590,30 @@ VM0033_EXPORT_INTERVALS.forEach(function(interval) {
   });
 
   // Export Standard Error (kg/m²)
+  // File naming: carbon_stock_prior_se_7.5cm.tif
   Export.image.toDrive({
     image: vm0033_stocks_se[interval].clip(studyArea),
-    description: 'soc_se_' + intervalStr + 'cm',
+    description: 'carbon_stock_prior_se_' + midpoint + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_se_' + intervalStr + 'cm_kgm2',
+    fileNamePrefix: 'carbon_stock_prior_se_' + midpoint + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
     maxPixels: 1e13
   });
 
-  // Export Coefficient of Variation (%)
+  // Export Coefficient of Variation (%) - for diagnostic purposes
   Export.image.toDrive({
     image: cv_layers[interval].clip(studyArea),
-    description: 'soc_cv_' + intervalStr + 'cm',
+    description: 'carbon_stock_prior_cv_' + midpoint + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_cv_' + intervalStr + 'cm_percent',
+    fileNamePrefix: 'carbon_stock_prior_cv_' + midpoint + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
     maxPixels: 1e13
   });
 });
-
-// Export blended 50-100 cm if available
-if (useSothe && sothe_soil !== null && vm0033_stocks['50-100-blended']) {
-  Export.image.toDrive({
-    image: vm0033_stocks['50-100-blended'].clip(studyArea),
-    description: 'soc_stock_50_100cm_blended',
-    folder: EXPORT_FOLDER,
-    fileNamePrefix: 'soc_stock_50_100cm_blended_kgm2',
-    region: studyArea,
-    scale: EXPORT_SCALE,
-    crs: EXPORT_CRS,
-    maxPixels: 1e13
-  });
-  
-  if (vm0033_stocks_se['50-100-blended']) {
-    Export.image.toDrive({
-      image: vm0033_stocks_se['50-100-blended'].clip(studyArea),
-      description: 'soc_se_50_100cm_blended',
-      folder: EXPORT_FOLDER,
-      fileNamePrefix: 'soc_se_50_100cm_blended_kgm2',
-      region: studyArea,
-      scale: EXPORT_SCALE,
-      crs: EXPORT_CRS,
-      maxPixels: 1e13
-    });
-  }
-}
 
 // Export uncertainty strata
 Export.image.toDrive({
@@ -587,60 +627,8 @@ Export.image.toDrive({
   maxPixels: 1e13
 });
 
-// Export Sothe layers if available
-if (useSothe) {
-  if (sothe_soil !== null) {
-    Export.image.toDrive({
-      image: sothe_soil.clip(studyArea),
-      description: 'sothe_soil_carbon',
-      folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_soil_carbon_1m_kgm2',
-      region: studyArea,
-      scale: EXPORT_SCALE,
-      crs: EXPORT_CRS,
-      maxPixels: 1e13
-    });
-  }
-
-  if (sothe_soil_unc !== null) {
-    Export.image.toDrive({
-      image: sothe_soil_unc.clip(studyArea),
-      description: 'sothe_soil_carbon_unc',
-      folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_soil_carbon_1m_unc_kgm2',
-      region: studyArea,
-      scale: EXPORT_SCALE,
-      crs: EXPORT_CRS,
-      maxPixels: 1e13
-    });
-  }
-
-  if (sothe_forest !== null) {
-    Export.image.toDrive({
-      image: sothe_forest.clip(studyArea),
-      description: 'sothe_forest_biomass',
-      folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_forest_biomass_mgha',
-      region: studyArea,
-      scale: EXPORT_SCALE,
-      crs: EXPORT_CRS,
-      maxPixels: 1e13
-    });
-  }
-
-  if (sothe_other !== null) {
-    Export.image.toDrive({
-      image: sothe_other.clip(studyArea),
-      description: 'sothe_other_biomass',
-      folder: EXPORT_FOLDER,
-      fileNamePrefix: 'sothe_other_biomass_mgha',
-      region: studyArea,
-      scale: EXPORT_SCALE,
-      crs: EXPORT_CRS,
-      maxPixels: 1e13
-    });
-  }
-}
+// Note: Sothe et al. data is blended into the 50-100cm layer above
+// No need to export Sothe layers separately
 
 // ============================================================================
 // SUMMARY AND METADATA
@@ -652,40 +640,72 @@ print('════════════════════════�
 print('Study Area Bounds:', studyArea.bounds());
 print('Export Scale:', EXPORT_SCALE, 'meters');
 print('Export CRS:', EXPORT_CRS);
-print('VM0033 Depth Intervals:', Object.keys(VM0033_INTERVALS).join(', '));
+print('VM0033 Midpoint Depths: 7.5, 22.5, 40, 75 cm');
 print('');
-print('CARBON STOCK UNITS: kg/m² (kilograms per square meter)');
+print('UNITS: All carbon stocks in kg/m² (kilograms per square meter)');
 print('');
-print('DATA SOURCES:');
-print('  • SoilGrids v2.0 (Poggio et al. 2021)');
+print('DATA SOURCES AND STRATEGY:');
+print('  • SoilGrids v2.0 (Poggio et al. 2021) - Global baseline');
 print('    - SOC concentration: g/kg');
 print('    - Bulk density: cg/cm³');
 print('    - Resolution: 250m');
+print('    - Used for: ALL depth intervals');
 if (useSothe) {
-  print('  • Sothe et al. 2022 BC Coast');
-  print('    - Soil carbon to 1m: kg/m²');
-  print('    - Forest biomass: Mg/ha');
+  print('');
+  print('  • Sothe et al. 2022 BC Coast - Regional refinement');
+  print('    - Soil carbon to 1m (0-100cm total): kg/m²');
+  print('    - Used for: Blending with SoilGrids 0-100cm total');
+  print('    - Blending method: Precision-weighted average of totals');
+  print('    - Scaling: Applied proportionally to all 4 depth intervals');
 }
 print('');
-print('DEPTH INTERVAL CALCULATIONS:');
-print('  • 0-15 cm = 0-5 cm (5 cm) + 5-15 cm (10 cm)');
-print('  • 15-30 cm = 15-30 cm (15 cm) [direct match]');
-print('  • 30-50 cm = 20/30 × 30-60 cm interval');
-print('  • 50-100 cm = 10/30 × 30-60 cm + 60-100 cm (40 cm)');
+print('DEPTH INTERVAL CALCULATIONS FROM SOILGRIDS:');
+print('  • 0-15 cm (7.5 cm midpoint):');
+print('    = 0-5 cm (5 cm) + 5-15 cm (10 cm)');
+print('  • 15-30 cm (22.5 cm midpoint):');
+print('    = 15-30 cm (15 cm) direct match');
+print('  • 30-50 cm (40 cm midpoint):');
+print('    = 20/30 × 30-60 cm interval');
+print('  • 50-100 cm (75 cm midpoint):');
+print('    = 10/30 × 30-60 cm + 60-100 cm (40 cm)');
 print('');
-print('UNCERTAINTY PROPAGATION:');
-print('  • SE from percentiles: (Q95 - Q05) / 3.29');
-print('  • Combined SE: √(SE₁² + SE₂²)');
-print('  • Scaled SE: SE × scale_factor');
+if (useSothe && sothe_soil !== null) {
+  print('BLENDING APPLIED:');
+  print('  • Sum all 4 SoilGrids intervals = Total 0-100cm');
+  print('  • Blend: (SoilGrids total) + (Sothe et al. total) using precision weights');
+  print('  • Calculate scaling factor = Blended_total / SoilGrids_total');
+  print('  • Apply scaling factor to ALL 4 depth intervals proportionally');
+  print('  • Result: Regional accuracy + SoilGrids depth pattern preserved');
+}
+print('');
+print('EXPORTED FILES (12 total):');
+print('  Prior Means (4 files):');
+print('    - carbon_stock_prior_mean_7.5cm.tif');
+print('    - carbon_stock_prior_mean_22.5cm.tif');
+print('    - carbon_stock_prior_mean_40cm.tif');
+print('    - carbon_stock_prior_mean_75cm.tif');
+print('');
+print('  Prior Standard Errors (4 files):');
+print('    - carbon_stock_prior_se_7.5cm.tif');
+print('    - carbon_stock_prior_se_22.5cm.tif');
+print('    - carbon_stock_prior_se_40cm.tif');
+print('    - carbon_stock_prior_se_75cm.tif');
+print('');
+print('  Diagnostics (4 files):');
+print('    - carbon_stock_prior_cv_7.5cm.tif (coefficient of variation)');
+print('    - carbon_stock_prior_cv_22.5cm.tif');
+print('    - carbon_stock_prior_cv_40cm.tif');
+print('    - carbon_stock_prior_cv_75cm.tif');
+print('    - uncertainty_strata.tif (for Neyman sampling)');
 print('');
 print('NEXT STEPS:');
 print('1. Go to Tasks tab (top right in Code Editor)');
-print('2. Click RUN on each export task');
-print('3. Select Google Drive folder');
-print('4. Wait for exports to complete (~5-30 min depending on area)');
-print('5. Download files from Google Drive/' + EXPORT_FOLDER);
-print('6. Place in your R project data_prior/ folder');
-print('7. Run Module 00C in R to process and create prior maps');
+print('2. Click RUN on each export task (~13 tasks)');
+print('3. Wait for exports to complete (~5-30 min depending on area)');
+print('4. Download files from Google Drive/' + EXPORT_FOLDER);
+print('5. Place in: data_prior/gee_exports/');
+print('6. Run Module 00C in R to process priors');
+print('7. Run Module 01C for Bayesian sampling design');
 print('═══════════════════════════════════════');
 
 // ============================================================================

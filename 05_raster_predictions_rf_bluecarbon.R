@@ -1,12 +1,13 @@
 # ============================================================================
 # MODULE 05: BLUE CARBON RANDOM FOREST PREDICTIONS
 # ============================================================================
-# PURPOSE: Predict SOC using Random Forest with stratum-aware training
+# PURPOSE: Predict carbon stocks (kg/m²) using Random Forest with
+#          stratum-aware training and spatial covariates
 # INPUTS:
-#   - data_processed/cores_harmonized_spline_bluecarbon.rds
+#   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03)
 #   - covariates/*.tif (from GEE)
 # OUTPUTS:
-#   - outputs/predictions/rf/soc_rf_*cm.tif
+#   - outputs/predictions/rf/carbon_stock_rf_*cm.tif (kg/m²)
 #   - outputs/models/rf/rf_models_all_depths.rds
 #   - diagnostics/crossvalidation/rf_cv_results.csv
 # ============================================================================
@@ -558,8 +559,9 @@ for (depth in STANDARD_DEPTHS) {
                       n_distinct(depth_data$core_id),
                       n_distinct(depth_data$stratum)))
   
-  # Prepare predictors
-  response <- depth_data$soc_harmonized
+  # Prepare response and predictors
+  # Response: carbon stocks in kg/m² (from Module 03 harmonization)
+  response <- depth_data$carbon_stock_kg_m2
 
   # All predictors (including stratum if available as raster covariate)
   predictors <- depth_data %>%
@@ -574,15 +576,18 @@ for (depth in STANDARD_DEPTHS) {
   }
 
   # Check for Module 03 uncertainties
-  has_uncertainties <- all(c("soc_se_combined", "is_interpolated") %in% names(depth_data))
+  # Note: Carbon stock uncertainties would need SOC and BD uncertainty propagation
+  # For now, using RF prediction variance as primary uncertainty measure
+  has_uncertainties <- "is_interpolated" %in% names(depth_data)
+
   if (has_uncertainties) {
-    harmonization_se <- depth_data$soc_se_combined
-    harmonization_var_mean <- mean(harmonization_se^2, na.rm = TRUE)
-    log_message(sprintf("  Module 03 uncertainties available: mean SE = %.2f g/kg",
-                       sqrt(harmonization_var_mean)))
-  } else {
-    harmonization_var_mean <- 0
+    n_interpolated <- sum(depth_data$is_interpolated, na.rm = TRUE)
+    n_measured <- sum(!depth_data$is_interpolated, na.rm = TRUE)
+    log_message(sprintf("  Module 03 metadata: %d measured, %d interpolated depths",
+                       n_measured, n_interpolated))
   }
+
+  harmonization_var_mean <- 0  # Using RF variance as primary uncertainty
 
   # ========================================================================
   # TRAIN RF MODEL
@@ -611,7 +616,7 @@ for (depth in STANDARD_DEPTHS) {
   )
   
   oob_r2 <- 1 - rf_model$mse[RF_NTREE] / var(response)
-  log_message(sprintf("  RF trained: OOB R² = %.3f, OOB RMSE = %.2f",
+  log_message(sprintf("  RF trained: OOB R² = %.3f, OOB RMSE = %.2f kg/m²",
                       oob_r2, sqrt(rf_model$mse[RF_NTREE])))
   
   # ========================================================================
@@ -744,9 +749,9 @@ for (depth in STANDARD_DEPTHS) {
     na.rm = TRUE
   )
   
-  # Save prediction
+  # Save prediction (carbon stock in kg/m²)
   pred_file <- file.path("outputs/predictions/rf",
-                        sprintf("soc_rf_%.0fcm.tif", depth))
+                        sprintf("carbon_stock_rf_%.0fcm.tif", depth))
   writeRaster(pred_raster, pred_file, overwrite = TRUE)
 
   log_message(sprintf("  Saved: %s", basename(pred_file)))
@@ -765,7 +770,7 @@ for (depth in STANDARD_DEPTHS) {
   rf_var <- apply(all_tree_preds, 1, var)
   rf_se_mean <- mean(sqrt(rf_var), na.rm = TRUE)
 
-  log_message(sprintf("  Mean RF SE: %.2f g/kg", rf_se_mean))
+  log_message(sprintf("  Mean RF SE: %.2f kg/m²", rf_se_mean))
 
   # For spatial prediction, calculate pixel-wise uncertainty
   # This requires predicting with all trees across the raster
@@ -779,13 +784,13 @@ for (depth in STANDARD_DEPTHS) {
   rf_var_raster <- app(all_tree_pred_raster, var, na.rm = TRUE)
   rf_se_raster <- sqrt(rf_var_raster)
 
-  # Combine with Module 03 harmonization uncertainty
+  # Combine with Module 03 harmonization uncertainty (if available)
   if (has_uncertainties && harmonization_var_mean > 0) {
     # Combined variance = RF variance + harmonization variance
     combined_var_raster <- rf_var_raster + harmonization_var_mean
     combined_se_raster <- sqrt(combined_var_raster)
 
-    log_message(sprintf("  Combined uncertainty: RF + harmonization (mean SE = %.2f g/kg)",
+    log_message(sprintf("  Combined uncertainty: RF + harmonization (mean SE = %.2f kg/m²)",
                        mean(values(combined_se_raster), na.rm = TRUE)))
   } else {
     combined_var_raster <- rf_var_raster
@@ -810,28 +815,35 @@ for (depth in STANDARD_DEPTHS) {
   
   if (has_CAST && ENABLE_AOA) {
     log_message("  Calculating Area of Applicability...")
-    
+
     tryCatch({
+      # AOA identifies areas where predictions are reliable based on training data
+      # Uses dissimilarity index (DI) to flag extrapolation
+      # Passing the RF model enables variable importance weighting for more accurate AOA
       aoa_result <- aoa(
-        train = predictors,
-        predictors = covariate_stack,
-        variables = covariate_names
+        newdata = covariate_stack,  # Raster stack for prediction
+        train = predictors,          # Training data (dataframe)
+        variables = covariate_names, # Variables to use
+        model = rf_model             # RF model for variable importance weighting
       )
-      
-      # Save AOA
+
+      # Save AOA (binary mask: 1 = inside AOA, 0 = outside AOA)
       aoa_file <- file.path("outputs/predictions/rf",
                            sprintf("aoa_%.0fcm.tif", depth))
       writeRaster(aoa_result$AOA, aoa_file, overwrite = TRUE)
 
-      # Save DI
+      # Save DI (dissimilarity index: continuous measure of extrapolation)
       di_file <- file.path("outputs/predictions/rf",
                           sprintf("di_%.0fcm.tif", depth))
       writeRaster(aoa_result$DI, di_file, overwrite = TRUE)
-      
-      log_message("  AOA calculated and saved")
-      
+
+      # Calculate AOA statistics
+      aoa_pct <- mean(values(aoa_result$AOA), na.rm = TRUE) * 100
+      log_message(sprintf("  AOA calculated: %.1f%% of prediction area inside AOA", aoa_pct))
+
     }, error = function(e) {
       log_message(sprintf("  AOA failed: %s", e$message), "WARNING")
+      log_message("  Possible causes: insufficient training data or covariate mismatch", "WARNING")
     })
   }
   
@@ -844,32 +856,14 @@ for (depth in STANDARD_DEPTHS) {
 }
 
 # ============================================================================
-# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# VM0033 LAYER AGGREGATION: CARBON STOCK AGGREGATION
 # ============================================================================
 
 log_message("\n=== VM0033 Layer Aggregation ===")
+log_message("Note: Carbon stocks already calculated in kg/m² from Module 03")
 
 # Create output directory for stocks
 dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
-
-# Load bulk density data (check multiple possible sources)
-bd_data <- NULL
-
-# Try to load bulk density from Module 01
-if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
-  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
-  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
-    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
-    bd_data <- cores_all %>%
-      filter(!is.na(!!sym(bd_field))) %>%
-      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
-    log_message(sprintf("Loaded bulk density data from cores: %.3f g/cm³", bd_data$mean_bd))
-  }
-}
-
-# Default BD value if no data available (typical blue carbon values)
-bd_value <- if (!is.null(bd_data) && nrow(bd_data) > 0) bd_data$mean_bd else 0.5
-log_message(sprintf("Using bulk density: %.3f g/cm³", bd_value))
 
 # Initialize stock layers
 stock_layers <- list()
@@ -882,23 +876,24 @@ for (i in 1:nrow(VM0033_DEPTH_INTERVALS)) {
   depth_midpoint <- VM0033_DEPTH_INTERVALS$depth_midpoint[i]
   thickness_cm <- VM0033_DEPTH_INTERVALS$thickness_cm[i]
 
-  log_message(sprintf("Layer %d: %d-%d cm (midpoint %.1f cm, thickness %d cm)",
+  log_message(sprintf("Layer %d: %d-%d cm (midpoint %.0f cm, thickness %d cm)",
                      i, depth_top, depth_bottom, depth_midpoint, thickness_cm))
 
-  # Load SOC prediction raster for this depth midpoint
-  soc_file <- file.path("outputs/predictions/rf",
-                        sprintf("soc_rf_%.0fcm.tif", depth_midpoint))
+  # Load carbon stock prediction raster for this depth midpoint (kg/m²)
+  stock_file_kgm2 <- file.path("outputs/predictions/rf",
+                                sprintf("carbon_stock_rf_%.0fcm.tif", depth_midpoint))
 
-  if (!file.exists(soc_file)) {
-    log_message(sprintf("  SOC file not found: %s - skipping", basename(soc_file)), "WARNING")
+  if (!file.exists(stock_file_kgm2)) {
+    log_message(sprintf("  Carbon stock file not found: %s - skipping",
+                       basename(stock_file_kgm2)), "WARNING")
     next
   }
 
-  soc_raster <- rast(soc_file)
+  stock_raster_kgm2 <- rast(stock_file_kgm2)
 
-  # Convert SOC concentration (g/kg) to SOC stock (Mg C/ha)
-  # Formula: Stock (Mg/ha) = SOC (g/kg) × BD (g/cm³) × thickness (cm) × 10
-  stock_raster <- soc_raster * bd_value * thickness_cm * 10
+  # Convert carbon stock from kg/m² to Mg C/ha for VM0033 reporting
+  # Conversion: 1 kg/m² = 10 Mg/ha
+  stock_raster <- stock_raster_kgm2 * 10
 
   # Save layer stock
   stock_file <- file.path("outputs/predictions/stocks",
@@ -911,15 +906,16 @@ for (i in 1:nrow(VM0033_DEPTH_INTERVALS)) {
   mean_stock <- mean(values(stock_raster), na.rm = TRUE)
   log_message(sprintf("  Mean stock: %.2f Mg C/ha", mean_stock))
 
-  # Propagate uncertainty to stock
-  se_file <- file.path("outputs/predictions/rf",
-                      sprintf("se_combined_%.0fcm.tif", depth_midpoint))
+  # Propagate uncertainty to stock (Mg C/ha)
+  # Carbon stock SE in kg/m² from RF predictions
+  se_file_kgm2 <- file.path("outputs/predictions/rf",
+                            sprintf("se_combined_%.0fcm.tif", depth_midpoint))
 
-  if (file.exists(se_file)) {
-    se_raster <- rast(se_file)
+  if (file.exists(se_file_kgm2)) {
+    se_raster_kgm2 <- rast(se_file_kgm2)
 
-    # Stock SE = SOC_SE × BD × thickness × 10
-    stock_se_raster <- se_raster * bd_value * thickness_cm * 10
+    # Convert SE from kg/m² to Mg C/ha: multiply by 10
+    stock_se_raster <- se_raster_kgm2 * 10
 
     # Save stock SE
     stock_se_file <- file.path("outputs/predictions/stocks",
@@ -1131,15 +1127,15 @@ if (nrow(cv_results_all) > 0) {
   }
   
   cat(sprintf("\nMean CV R²: %.3f\n", mean(cv_results_all$cv_r2, na.rm = TRUE)))
-  cat(sprintf("Mean CV RMSE: %.2f g/kg\n", mean(cv_results_all$cv_rmse, na.rm = TRUE)))
+  cat(sprintf("Mean CV RMSE: %.2f kg/m²\n", mean(cv_results_all$cv_rmse, na.rm = TRUE)))
 }
 
 cat("\nOutputs:\n")
-cat("  SOC Predictions (g/kg): outputs/predictions/rf/soc_rf_*cm.tif\n")
+cat("  Carbon Stock Predictions (kg/m²): outputs/predictions/rf/carbon_stock_rf_*cm.tif\n")
 cat("  Prediction Uncertainty:\n")
 cat("    - RF-only SE: outputs/predictions/rf/se_rf_*cm.tif\n")
-cat("    - Combined SE (RF + harmonization): outputs/predictions/rf/se_combined_*cm.tif\n")
-cat("  SOC Stocks (Mg C/ha): outputs/predictions/stocks/\n")
+cat("    - Combined SE: outputs/predictions/rf/se_combined_*cm.tif\n")
+cat("  VM0033 Stocks (Mg C/ha): outputs/predictions/stocks/\n")
 cat("    - Layer stocks: stock_rf_layer*_*-*cm.tif\n")
 cat("    - Cumulative stocks: stock_rf_cumulative_0-*cm.tif\n")
 cat("    - Total stock: stock_rf_total_0-100cm.tif\n")
@@ -1147,8 +1143,8 @@ cat("    - Stock SE: stock_rf_se_layer*_*-*cm.tif\n")
 
 if (has_CAST && ENABLE_AOA) {
   cat("  Area of Applicability:\n")
-  cat("    - AOA masks: outputs/predictions/rf/aoa_*cm.tif\n")
-  cat("    - Dissimilarity Index: outputs/predictions/rf/di_*cm.tif\n")
+  cat("    - AOA masks: outputs/predictions/rf/aoa_*cm.tif (1 = inside AOA, 0 = extrapolation)\n")
+  cat("    - Dissimilarity Index: outputs/predictions/rf/di_*cm.tif (continuous measure)\n")
 }
 
 cat("  Models: outputs/models/rf/rf_models_all_depths.rds\n")
@@ -1157,17 +1153,25 @@ cat("    - CV results: diagnostics/crossvalidation/rf_cv_results.csv\n")
 cat("    - CV plots: diagnostics/crossvalidation/rf_cv_*.png\n")
 cat("    - Variable importance: diagnostics/variable_importance/rf_var_imp_*.png\n")
 
+cat("\nKey Changes:\n")
+cat("  ✓ Modeling carbon stocks (kg/m²) directly from Module 03 harmonization\n")
+cat("  ✓ No SOC→stock conversion needed (stocks pre-calculated from SOC + BD)\n")
+cat("  ✓ VM0033 reporting stocks converted to Mg C/ha (multiply by 10)\n")
+cat("  ✓ Fixed AOA calculation (correct parameter names for CAST::aoa)\n")
+cat("  ✓ AOA now includes percentage of area inside applicability threshold\n")
+
 cat("\nKey Features:\n")
 cat("  - Stratum as categorical covariate (if GEE masks available)\n")
-cat("  - Prediction uncertainty quantification (RF + Module 03)\n")
-cat("  - VM0033 layer aggregation with stock calculation\n")
+cat("  - Prediction uncertainty quantification (RF variance)\n")
+cat("  - VM0033 layer aggregation for carbon credit reporting\n")
 cat("  - Variable importance analysis for all depths\n")
+cat("  - Area of Applicability identifies extrapolation zones\n")
 
 cat("\nNext steps:\n")
 cat("  1. Review CV plots in diagnostics/crossvalidation/\n")
 cat("  2. Check variable importance plots for all depths\n")
 cat("  3. Compare RF vs kriging predictions (Module 04)\n")
-cat("  4. Review AOA to identify extrapolation areas\n")
+cat("  4. Review AOA masks to identify extrapolation areas (0 values)\n")
 cat("  5. Validate stock calculations against field measurements\n\n")
 
 log_message("=== MODULE 05 COMPLETE ===")

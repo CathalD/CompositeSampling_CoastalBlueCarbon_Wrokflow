@@ -4,11 +4,11 @@
 # PURPOSE: Aggregate carbon stocks from Modules 04/05, calculate conservative
 #          estimates, compare methods, and generate VM0033 compliance reports
 # INPUTS:
-#   - outputs/predictions/kriging/soc_*_*cm.tif (from Module 04)
-#   - outputs/predictions/kriging/soc_se_*_*cm.tif (from Module 04)
-#   - outputs/predictions/rf/soc_rf_*cm.tif (from Module 05)
-#   - outputs/predictions/rf/soc_rf_se_*cm.tif (from Module 05)
-#   - data_processed/stratum_raster.tif (from Module 05)
+#   - outputs/predictions/kriging/carbon_stock_*_*cm.tif (from Module 04, kg/m²)
+#   - outputs/predictions/kriging/se_combined_*_*cm.tif (from Module 04)
+#   - outputs/predictions/rf/carbon_stock_rf_*cm.tif (from Module 05, kg/m²)
+#   - outputs/predictions/rf/se_combined_*cm.tif (from Module 05)
+#   - data_processed/stratum_raster.tif (from Module 05, optional)
 # OUTPUTS:
 #   - outputs/carbon_stocks/carbon_stocks_by_stratum_kriging.csv
 #   - outputs/carbon_stocks/carbon_stocks_by_stratum_rf.csv
@@ -16,6 +16,7 @@
 #   - outputs/carbon_stocks/carbon_stocks_conservative_vm0033.csv
 #   - outputs/carbon_stocks/maps/*.tif
 #   - outputs/mmrv_reports/vm0033_verification_summary.html
+# NOTE: Modules 04 & 05 now output carbon stocks directly in kg/m² (not SOC)
 # ============================================================================
 
 # ============================================================================
@@ -98,9 +99,10 @@ calculate_conservative_estimate <- function(mean_raster, se_raster, confidence =
   return(conservative)
 }
 
-#' Load stock rasters for a given method
+#' Load carbon stock rasters for a given method
 #' @param method 'kriging' or 'rf'
 #' @return List with stock and se rasters by depth
+#' @note Loads carbon stocks in kg/m² (from Module 03 harmonization via 04/05)
 load_stock_rasters <- function(method) {
 
   stocks <- list()
@@ -108,12 +110,14 @@ load_stock_rasters <- function(method) {
 
   if (method == "kriging") {
     stock_dir <- "outputs/predictions/kriging"
-    stock_pattern <- "soc_.*_[0-9]+cm\\.tif"
-    se_pattern <- "soc_se_.*_[0-9]+cm\\.tif"
+    # Updated patterns to match Module 04 output: carbon_stock_{stratum}_{depth}cm.tif
+    stock_pattern <- "^carbon_stock_.*_[0-9]+cm\\.tif$"
+    se_pattern <- "^se_combined_.*_[0-9]+cm\\.tif$"
   } else if (method == "rf") {
     stock_dir <- "outputs/predictions/rf"
-    stock_pattern <- "soc_rf_[0-9]+cm\\.tif"
-    se_pattern <- "soc_rf_se_[0-9]+cm\\.tif"
+    # Updated patterns to match Module 05 output: carbon_stock_rf_{depth}cm.tif
+    stock_pattern <- "^carbon_stock_rf_[0-9]+cm\\.tif$"
+    se_pattern <- "^se_combined_[0-9]+cm\\.tif$"
   } else {
     stop("method must be 'kriging' or 'rf'")
   }
@@ -132,11 +136,17 @@ load_stock_rasters <- function(method) {
 
   log_message(sprintf("Loading %d stock rasters for %s method", length(stock_files), method))
 
-  # Group files by depth (handle multiple strata per depth)
+  # Group files by depth (handle multiple strata per depth for kriging)
+  # Extract depth from filenames:
+  #   Kriging: carbon_stock_{stratum}_{depth}cm.tif
+  #   RF: carbon_stock_rf_{depth}cm.tif
+  # NOTE: Filenames use rounded depths (7.5→8, 22.5→22, 40→40, 75→75)
+  # The actual VM0033 midpoints are 7.5, 22.5, 40, 75 cm
   depth_files <- data.frame(
     file = stock_files,
     depth = sapply(stock_files, function(f) {
-      as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+      # Extract number before "cm" in filename (will be rounded)
+      as.numeric(gsub(".*_(\\d+)cm\\.tif$", "\\1", basename(f)))
     })
   )
 
@@ -145,15 +155,19 @@ load_stock_rasters <- function(method) {
 
     if (length(files_at_depth) == 1) {
       # Single file for this depth
-      stocks[[as.character(d)]] <- rast(files_at_depth)
-      log_message(sprintf("  Loaded: stock at depth %.0f cm", d))
+      stock_raster <- rast(files_at_depth)
+      # Convert from kg/m² to Mg/ha for VM0033 reporting: 1 kg/m² = 10 Mg/ha
+      stocks[[as.character(d)]] <- stock_raster * 10
+      log_message(sprintf("  Loaded: stock at depth %.0f cm (converted kg/m² → Mg/ha)", d))
     } else {
       # Multiple files (e.g., different strata) - mosaic them
       log_message(sprintf("  Loading %d files for depth %.0f cm (mosaicking strata)",
                          length(files_at_depth), d))
       rasters <- lapply(files_at_depth, rast)
-      stocks[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
-      log_message(sprintf("  Mosaicked: stock at depth %.0f cm", d))
+      stock_raster <- do.call(mosaic, c(rasters, list(fun = "mean")))
+      # Convert from kg/m² to Mg/ha for VM0033 reporting: 1 kg/m² = 10 Mg/ha
+      stocks[[as.character(d)]] <- stock_raster * 10
+      log_message(sprintf("  Mosaicked: stock at depth %.0f cm (converted kg/m² → Mg/ha)", d))
     }
   }
 
@@ -164,10 +178,15 @@ load_stock_rasters <- function(method) {
     log_message(sprintf("Loading %d uncertainty rasters for %s method", length(se_files), method))
 
     # Group SE files by depth
+    # Extract depth from filenames:
+    #   Kriging: se_combined_{stratum}_{depth}cm.tif
+    #   RF: se_combined_{depth}cm.tif
+    # NOTE: Same as stocks - filenames use rounded depths (7.5→8, 22.5→22)
     se_depth_files <- data.frame(
       file = se_files,
       depth = sapply(se_files, function(f) {
-        as.numeric(gsub(".*_(\\d+)cm.*", "\\1", basename(f)))
+        # Extract number before "cm" in filename (will be rounded)
+        as.numeric(gsub(".*_(\\d+)cm\\.tif$", "\\1", basename(f)))
       })
     )
 
@@ -176,15 +195,19 @@ load_stock_rasters <- function(method) {
 
       if (length(files_at_depth) == 1) {
         # Single file for this depth
-        uncertainties[[as.character(d)]] <- rast(files_at_depth)
-        log_message(sprintf("  Loaded: SE at depth %.0f cm", d))
+        se_raster <- rast(files_at_depth)
+        # Convert SE from kg/m² to Mg/ha: multiply by 10
+        uncertainties[[as.character(d)]] <- se_raster * 10
+        log_message(sprintf("  Loaded: SE at depth %.0f cm (converted kg/m² → Mg/ha)", d))
       } else {
         # Multiple files - mosaic them
         log_message(sprintf("  Loading %d SE files for depth %.0f cm (mosaicking strata)",
                            length(files_at_depth), d))
         rasters <- lapply(files_at_depth, rast)
-        uncertainties[[as.character(d)]] <- do.call(mosaic, c(rasters, list(fun = "mean")))
-        log_message(sprintf("  Mosaicked: SE at depth %.0f cm", d))
+        se_raster <- do.call(mosaic, c(rasters, list(fun = "mean")))
+        # Convert SE from kg/m² to Mg/ha: multiply by 10
+        uncertainties[[as.character(d)]] <- se_raster * 10
+        log_message(sprintf("  Mosaicked: SE at depth %.0f cm (converted kg/m² → Mg/ha)", d))
       }
     }
   } else {
@@ -280,23 +303,34 @@ for (method in METHODS_AVAILABLE) {
     log_message(sprintf("\n  Interval: %s (midpoint %.1f cm)", interval_label, depth_mid))
 
     # Check if we have stock for this depth
-    depth_str <- as.character(depth_mid)
+    # NOTE: Files are named with rounded depths (7.5→8, 22.5→22)
+    # but actual VM0033 midpoints are exact (7.5, 22.5)
+    # Round the depth to match file naming convention
+    depth_rounded <- round(depth_mid)
+    depth_str <- as.character(depth_rounded)
 
     if (!depth_str %in% names(stocks)) {
-      log_message(sprintf("    No stock raster for depth %.1f cm", depth_mid), "WARNING")
+      log_message(sprintf("    No stock raster for depth %.1f cm (looking for %d cm in files)",
+                         depth_mid, depth_rounded), "WARNING")
       next
     }
 
-    # Load stock raster (already computed by Module 04/05)
+    log_message(sprintf("    Found stock file for depth %.1f cm (file uses %d cm)",
+                       depth_mid, depth_rounded))
+
+    # Load stock raster (computed by Module 04/05, converted to Mg/ha)
+    # Note: These are carbon stocks, not SOC concentrations
+    # Carbon stocks calculated from harmonized SOC + BD in Module 03
+    # Converted from kg/m² to Mg/ha (× 10) when loaded
     stock_raster <- stocks[[depth_str]]
 
-    # Load uncertainty if available
+    # Load uncertainty if available (also converted to Mg/ha)
     if (has_uncertainties && depth_str %in% names(uncertainties)) {
       se_raster <- uncertainties[[depth_str]]
-      log_message(sprintf("    Loaded stock with uncertainty"))
+      log_message(sprintf("    Carbon stock (Mg/ha) loaded with uncertainty"))
     } else {
       se_raster <- NULL
-      log_message(sprintf("    Loaded stock (no uncertainty)"))
+      log_message(sprintf("    Carbon stock (Mg/ha) loaded without uncertainty"))
     }
 
     # Store results
@@ -1018,6 +1052,12 @@ if (HAS_STRATUM_RASTER) {
 
 cat("  ✓ Uncertainty propagated from Modules 04 & 05\n")
 cat("  ✓ Both kriging and RF methods compared\n")
+cat("  ✓ Carbon stocks converted from kg/m² to Mg C/ha for VM0033 reporting\n")
+
+cat("\nKey Changes:\n")
+cat("  • Modules 04 & 05 now output carbon stocks (kg/m²) instead of SOC\n")
+cat("  • Automatic conversion to Mg C/ha (×10) for VM0033 compliance\n")
+cat("  • Carbon stocks pre-calculated from harmonized SOC + BD in Module 03\n")
 
 cat("\nNext steps:\n")
 cat("  1. Review carbon stock maps in outputs/carbon_stocks/maps/\n")

@@ -3,22 +3,45 @@
 # ============================================================================
 # PURPOSE: Process GEE-exported prior maps for Bayesian carbon stock estimation
 #
+# DATA SOURCES STRATEGY:
+#   • SoilGrids v2.0 (Poggio et al. 2021): Global baseline for depth patterns
+#   • Sothe et al. 2022 BC Coast: Regional refinement for total 0-100cm stock
+#   • Blending method: Precision-weighted average of 0-100cm totals,
+#                      then proportional scaling applied to ALL depths
+#
+# HOW BLENDING WORKS (in GEE script):
+#   1. Calculate 4 SoilGrids depth intervals (0-15, 15-30, 30-50, 50-100 cm)
+#   2. Sum all 4 intervals → SoilGrids total 0-100cm
+#   3. Blend: (SoilGrids total) + (Sothe et al. total) using precision weights
+#   4. Calculate scaling factor = Blended_total / SoilGrids_original_total
+#   5. Apply scaling factor to ALL 4 depth intervals proportionally
+#   6. Result: Regional accuracy + SoilGrids depth pattern preserved
+#
 # PREREQUISITES:
 #   1. Run GEE_EXPORT_BAYESIAN_PRIORS.js in Google Earth Engine
+#      - Script calculates carbon stocks from SoilGrids for all VM0033 depths
+#      - Script blends totals and scales all depths proportionally
+#      - Exports files with VM0033 midpoint depths: 7.5, 22.5, 40, 75 cm
 #   2. Download exported files from Google Drive
 #   3. Place files in data_prior/gee_exports/ directory
 #
 # INPUTS:
-#   - data_prior/gee_exports/soc_prior_mean_*cm.tif (from GEE)
-#   - data_prior/gee_exports/soc_prior_se_*cm.tif (from GEE)
-#   - data_prior/gee_exports/uncertainty_strata.tif (from GEE)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_7.5cm.tif (regionally-scaled)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_22.5cm.tif (regionally-scaled)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_40cm.tif (regionally-scaled)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_75cm.tif (regionally-scaled)
+#   - data_prior/gee_exports/carbon_stock_prior_se_*.tif (scaled uncertainties)
+#   - data_prior/gee_exports/uncertainty_strata.tif (optional - for Neyman sampling)
 #   - blue_carbon_config.R (configuration)
 #
 # OUTPUTS:
-#   - data_prior/soc_prior_mean_*cm.tif (processed and aligned)
-#   - data_prior/soc_prior_se_*cm.tif (processed and aligned)
+#   - data_prior/carbon_stock_prior_mean_*.tif (processed and aligned - kg/m²)
+#   - data_prior/carbon_stock_prior_se_*.tif (processed and aligned - kg/m²)
 #   - data_prior/uncertainty_strata.tif (for Neyman sampling)
-#   - data_prior/prior_metadata.csv (source information)
+#   - data_prior/prior_metadata.csv (source information with blending documented)
+#
+# NOTE: All priors are in carbon stocks (kg/m²) for consistency with Modules 03-06
+#       If Sothe et al. data was available, ALL depths are regionally-scaled
 #
 # ============================================================================
 
@@ -75,17 +98,18 @@ if (!dir.exists(gee_exports_dir)) {
        "5. Re-run this module")
 }
 
-# Find all exported prior files
-prior_files <- list.files(gee_exports_dir, pattern = "soc_prior_mean.*\\.tif$",
+# Find all exported carbon stock prior files (kg/m²)
+prior_files <- list.files(gee_exports_dir, pattern = "carbon_stock_prior_mean.*\\.tif$",
                           full.names = TRUE)
 
 if (length(prior_files) == 0) {
-  stop(sprintf("No prior mean files found in %s\n", gee_exports_dir),
-       "Expected files like: soc_prior_mean_7_5cm.tif, soc_prior_mean_22_5cm.tif, etc.\n",
-       "Please run GEE export script and download files first.")
+  stop(sprintf("No carbon stock prior mean files found in %s\n", gee_exports_dir),
+       "Expected files: carbon_stock_prior_mean_7_5cm.tif, carbon_stock_prior_mean_22_5cm.tif, etc.\n",
+       "Please run updated GEE export script (GEE_EXPORT_BAYESIAN_PRIORS.js) and download files first.\n",
+       "NOTE: GEE script must export carbon stocks (kg/m²), not SOC (g/kg).")
 }
 
-log_message(sprintf("Found %d prior mean files:", length(prior_files)))
+log_message(sprintf("Found %d carbon stock prior mean files:", length(prior_files)))
 for (f in prior_files) {
   log_message(sprintf("  - %s", basename(f)))
 }
@@ -135,18 +159,18 @@ for (depth in vm0033_depths) {
 
   log_message(sprintf("\n  Processing depth: %.1f cm", depth))
 
-  # === MEAN LAYER ===
+  # === MEAN LAYER (carbon stocks kg/m²) ===
   mean_file <- file.path(gee_exports_dir,
-                         sprintf("soc_prior_mean_%scm.tif", depth_str))
+                         sprintf("carbon_stock_prior_mean_%scm.tif", depth_str))
 
   if (!file.exists(mean_file)) {
-    log_message(sprintf("    Mean file not found: %s", basename(mean_file)), "WARNING")
+    log_message(sprintf("    Carbon stock prior mean file not found: %s", basename(mean_file)), "WARNING")
     next
   }
 
   # Load raster
   mean_raster <- rast(mean_file)
-  log_message(sprintf("    Loaded mean: %s", basename(mean_file)))
+  log_message(sprintf("    Loaded carbon stock mean: %s", basename(mean_file)))
 
   # Reproject to PROCESSING_CRS if needed
   if (crs(mean_raster, describe = TRUE)$code != sprintf("EPSG:%d", PROCESSING_CRS)) {
@@ -176,9 +200,9 @@ for (depth in vm0033_depths) {
     mean_raster <- resample(mean_raster, template, method = "bilinear")
   }
 
-  # === SE LAYER ===
+  # === SE LAYER (carbon stocks kg/m²) ===
   se_file <- file.path(gee_exports_dir,
-                       sprintf("soc_prior_se_%scm.tif", depth_str))
+                       sprintf("carbon_stock_prior_se_%scm.tif", depth_str))
 
   if (file.exists(se_file)) {
     se_raster <- rast(se_file)
@@ -202,17 +226,17 @@ for (depth in vm0033_depths) {
     # Apply uncertainty inflation factor (conservative adjustment)
     se_raster <- se_raster * PRIOR_UNCERTAINTY_INFLATION
 
-    log_message(sprintf("    Loaded SE (inflated by %.1fx)", PRIOR_UNCERTAINTY_INFLATION))
+    log_message(sprintf("    Loaded carbon stock SE (inflated by %.1fx)", PRIOR_UNCERTAINTY_INFLATION))
   } else {
-    log_message("    SE file not found - using 20% of mean as default SE", "WARNING")
+    log_message("    Carbon stock SE file not found - using 20% of mean as default SE", "WARNING")
     se_raster <- mean_raster * 0.20
   }
 
-  # === SAVE PROCESSED RASTERS ===
+  # === SAVE PROCESSED RASTERS (carbon stocks kg/m²) ===
   mean_out <- file.path(BAYESIAN_PRIOR_DIR,
-                        sprintf("soc_prior_mean_%.1fcm.tif", depth))
+                        sprintf("carbon_stock_prior_mean_%.1fcm.tif", depth))
   se_out <- file.path(BAYESIAN_PRIOR_DIR,
-                      sprintf("soc_prior_se_%.1fcm.tif", depth))
+                      sprintf("carbon_stock_prior_se_%.1fcm.tif", depth))
 
   writeRaster(mean_raster, mean_out, overwrite = TRUE)
   writeRaster(se_raster, se_out, overwrite = TRUE)
@@ -228,20 +252,26 @@ for (depth in vm0033_depths) {
   se_vals <- se_vals[!is.na(se_vals)]
 
   if (length(mean_vals) > 0) {
+    # Determine data source
+    # If Sothe et al. was available in GEE, ALL depths are regionally-scaled
+    # The GEE script blends 0-100cm totals and applies scaling to all depths
+    # Note: This R module doesn't know if Sothe was used, so we use generic label
+    data_source <- "SoilGrids_v2.0 (regionally_scaled_if_Sothe_available)"
+
     processed_files <- rbind(processed_files, data.frame(
       depth_cm = depth,
       mean_file = basename(mean_out),
       se_file = basename(se_out),
-      mean_soc_gkg = mean(mean_vals, na.rm = TRUE),
-      sd_soc_gkg = sd(mean_vals, na.rm = TRUE),
-      mean_se_gkg = mean(se_vals, na.rm = TRUE),
+      mean_carbon_stock_kgm2 = mean(mean_vals, na.rm = TRUE),
+      sd_carbon_stock_kgm2 = sd(mean_vals, na.rm = TRUE),
+      mean_se_kgm2 = mean(se_vals, na.rm = TRUE),
       cv_pct = 100 * mean(se_vals, na.rm = TRUE) / mean(mean_vals, na.rm = TRUE),
       n_pixels = length(mean_vals),
       area_ha = length(mean_vals) * (PREDICTION_RESOLUTION^2) / 10000,
-      source = "SoilGrids_250m"
+      source = data_source
     ))
 
-    log_message(sprintf("    Stats: Mean=%.1f g/kg, SE=%.1f g/kg, CV=%.1f%%",
+    log_message(sprintf("    Stats: Mean=%.2f kg/m², SE=%.2f kg/m², CV=%.1f%%",
                        mean(mean_vals), mean(se_vals),
                        100 * mean(se_vals) / mean(mean_vals)))
   }
@@ -354,9 +384,9 @@ cat("========================================\n\n")
 cat(sprintf("Processed depths: %s\n",
             paste(processed_files$depth_cm, collapse = ", ")))
 cat(sprintf("Total area: %.1f ha\n", max(processed_files$area_ha, na.rm = TRUE)))
-cat(sprintf("Mean SOC (all depths): %.1f ± %.1f g/kg\n",
-            mean(processed_files$mean_soc_gkg),
-            mean(processed_files$mean_se_gkg)))
+cat(sprintf("Mean carbon stock (all depths): %.1f ± %.1f kg/m²\n",
+            mean(processed_files$mean_carbon_stock_kgm2),
+            mean(processed_files$mean_se_kgm2)))
 cat(sprintf("Mean CV: %.1f%%\n", mean(processed_files$cv_pct)))
 cat("\n")
 

@@ -2,12 +2,29 @@
 # MODULE 01: BLUE CARBON DATA PREPARATION
 # ============================================================================
 # PURPOSE: Load, clean, validate, and structure core data for MMRV
-# INPUTS: 
+#
+# INPUTS:
 #   - data_raw/core_locations.csv (GPS + stratum assignments)
 #   - data_raw/core_samples.csv (depth profiles + SOC)
-# OUTPUTS: 
-#   - data_processed/cores_clean_bluecarbon.rds
-#   - data_processed/cores_summary_by_stratum.csv
+#   - blue_carbon_config.R (configuration)
+#
+# OUTPUTS:
+#   Core Data (data_processed/):
+#     - cores_clean_bluecarbon.rds/.csv (cleaned sample data)
+#     - core_totals.rds/.csv (integrated carbon stocks by core)
+#     - cores_summary_by_stratum.csv (stratum statistics)
+#     - carbon_by_stratum_summary.csv (carbon summaries)
+#
+#   Diagnostics (diagnostics/data_prep/):
+#     - vm0033_compliance_report.csv (VM0033 requirements check)
+#     - core_depth_completeness.csv (depth coverage by core)
+#     - depth_completeness_summary.csv (overall depth coverage)
+#     - core_type_summary.csv (HR vs Composite comparison)
+#     - core_type_statistical_tests.csv (statistical test results)
+#
+#   QA/QC (diagnostics/qaqc/):
+#     - bd_transparency_report.csv (bulk density measured vs estimated)
+#     - qa_report.rds (comprehensive QA summary)
 # ============================================================================
 
 # ============================================================================
@@ -30,9 +47,22 @@ if (length(missing_vars) > 0) {
                paste(missing_vars, collapse=", ")))
 }
 
+# Create required output directories
+required_dirs <- c(
+  "logs",
+  "data_processed",
+  "diagnostics/data_prep",
+  "diagnostics/qaqc"
+)
+
+for (dir in required_dirs) {
+  if (!dir.exists(dir)) {
+    dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  }
+}
+
 # Initialize logging
 log_file <- file.path("logs", paste0("data_prep_", Sys.Date(), ".log"))
-if (!dir.exists("logs")) dir.create("logs")
 
 log_message <- function(msg, level = "INFO") {
   timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
@@ -73,11 +103,13 @@ validate_strata <- function(strata_vector, valid_strata = VALID_STRATA) {
 
 #' Calculate SOC stock for a depth increment
 calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_cm) {
-  # SOC stock (Mg/ha) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) × 100
-  soc_prop <- soc_g_kg / 1000
+  # SOC stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) / 10
+  # This is the standard unit for carbon stock reporting and aligns with prior data
+  # Note: To convert to Mg/ha for VM0033 reporting, multiply by 10
+  soc_prop <- soc_g_kg / 1000  # Convert g/kg to kg/kg (proportion)
   depth_increment <- depth_bottom_cm - depth_top_cm
-  soc_stock <- soc_prop * bd_g_cm3 * depth_increment * 100
-  return(soc_stock)
+  soc_stock_kg_m2 <- soc_prop * bd_g_cm3 * depth_increment / 10
+  return(soc_stock_kg_m2)
 }
 
 #' Assign bulk density defaults by stratum if missing
@@ -480,7 +512,7 @@ if (n_compliant < n_total) {
 }
 
 # Save VM0033 compliance report
-write_csv(vm0033_compliance, "data_processed/vm0033_compliance_report.csv")
+write_csv(vm0033_compliance, "diagnostics/data_prep/vm0033_compliance_report.csv")
 log_message("Saved VM0033 compliance report")
 
 # ============================================================================
@@ -587,7 +619,7 @@ cat("   Carbon stock uncertainty will be higher for samples with estimated BD.\n
 cat("   VM0033 recommends measuring BD for all cores when possible.\n\n")
 
 # Save BD transparency report
-write_csv(bd_transparency, "data_processed/bd_transparency_report.csv")
+write_csv(bd_transparency, "diagnostics/qaqc/bd_transparency_report.csv")
 log_message("Saved BD transparency report")
 
 # ============================================================================
@@ -598,11 +630,12 @@ log_message("Calculating carbon stocks...")
 
 cores_complete <- cores_complete %>%
   mutate(
-    # Carbon stock per sample (Mg C/ha)
-    carbon_stock_mg_ha = calculate_soc_stock(
-      soc_g_kg, 
-      bulk_density_g_cm3, 
-      depth_top_cm, 
+    # Carbon stock per sample (kg C/m²)
+    # Standard unit for carbon stock reporting and aligns with prior data
+    carbon_stock_kg_m2 = calculate_soc_stock(
+      soc_g_kg,
+      bulk_density_g_cm3,
+      depth_top_cm,
       depth_bottom_cm
     )
   )
@@ -611,7 +644,7 @@ cores_complete <- cores_complete %>%
 core_totals <- cores_complete %>%
   group_by(core_id, stratum) %>%
   summarise(
-    total_carbon_stock = sum(carbon_stock_mg_ha, na.rm = TRUE),
+    total_carbon_stock = sum(carbon_stock_kg_m2, na.rm = TRUE),
     max_depth_sampled = max(depth_bottom_cm),
     n_samples = n(),
     .groups = "drop"
@@ -707,8 +740,8 @@ for (i in 1:nrow(depth_completeness_summary)) {
 }
 
 # Save depth completeness report
-write_csv(core_depth_completeness, "data_processed/core_depth_completeness.csv")
-write_csv(depth_completeness_summary, "data_processed/depth_completeness_summary.csv")
+write_csv(core_depth_completeness, "diagnostics/data_prep/core_depth_completeness.csv")
+write_csv(depth_completeness_summary, "diagnostics/data_prep/depth_completeness_summary.csv")
 log_message("Saved depth completeness reports")
 
 # ============================================================================
@@ -852,8 +885,8 @@ if ("core_type" %in% names(cores_complete)) {
       }
 
       # Save core type comparison
-      write_csv(core_type_summary, "data_processed/core_type_summary.csv")
-      write_csv(statistical_tests_df, "data_processed/core_type_statistical_tests.csv")
+      write_csv(core_type_summary, "diagnostics/data_prep/core_type_summary.csv")
+      write_csv(statistical_tests_df, "diagnostics/data_prep/core_type_statistical_tests.csv")
       log_message("Saved core type comparison reports")
 
     } else {
@@ -978,7 +1011,7 @@ qa_report <- list(
   monitoring_year = MONITORING_YEAR
 )
 
-saveRDS(qa_report, "data_processed/qa_report.rds")
+saveRDS(qa_report, "diagnostics/qaqc/qa_report.rds")
 log_message("Saved: qa_report.rds")
 
 # ============================================================================

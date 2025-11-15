@@ -1,12 +1,14 @@
 # ============================================================================
 # MODULE 04: BLUE CARBON STRATIFIED KRIGING PREDICTIONS
 # ============================================================================
-# PURPOSE: Spatial interpolation of SOC using stratified kriging by ecosystem type
+# PURPOSE: Spatial interpolation of carbon stocks (kg/m²) using stratified
+#          kriging by ecosystem type. Models harmonized carbon stocks directly
+#          rather than SOC concentration.
 # INPUTS:
-#   - data_processed/cores_harmonized_spline_bluecarbon.rds (from Module 03)
+#   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03)
 #   - covariates/*.tif (optional, for covariate-assisted kriging)
 # OUTPUTS:
-#   - outputs/predictions/kriging/*.tif (SOC prediction rasters by stratum)
+#   - outputs/predictions/kriging/*.tif (carbon stock predictions by stratum, kg/m²)
 #   - outputs/predictions/uncertainty/*.tif (prediction variance)
 #   - outputs/models/kriging/*.rds (variogram models)
 # ============================================================================
@@ -124,11 +126,13 @@ log_message(sprintf("Standard depth predictions: %d", nrow(cores_standard)))
 
 # Check for required columns
 required_cols <- c("core_id", "longitude", "latitude", "stratum",
-                   "depth_cm", "soc_harmonized")
+                   "depth_cm", "carbon_stock_kg_m2")
 missing <- setdiff(required_cols, names(cores_standard))
 if (length(missing) > 0) {
   stop(sprintf("Missing required columns: %s", paste(missing, collapse = ", ")))
 }
+
+log_message(sprintf("Modeling carbon stocks in kg/m² (standard units throughout workflow)"))
 
 # Standardize core type names if present
 if ("core_type" %in% names(cores_standard) || "core_type_clean" %in% names(cores_standard)) {
@@ -504,9 +508,9 @@ plot_variogram <- function(vgm_emp, vgm_model, stratum_name, depth_cm) {
         width = 8, height = 6, units = "in", res = 300)
     
     plot(vgm_emp, vgm_model,
-         main = sprintf("Variogram: %s at %.1f cm", stratum_name, depth_cm),
+         main = sprintf("Carbon Stock Variogram: %s at %.0f cm", stratum_name, depth_cm),
          xlab = "Distance (m)",
-         ylab = "Semivariance")
+         ylab = "Semivariance (kg C/m²)²")
     
     dev.off()
     
@@ -577,24 +581,17 @@ for (depth in STANDARD_DEPTHS) {
     # ========================================================================
 
     # Check if uncertainty fields are available from Module 03
-    has_uncertainties <- all(c("soc_se_combined", "is_interpolated") %in% names(cores_stratum))
+    # Note: Carbon stock uncertainties would need to be propagated from SOC and BD uncertainties
+    # For now, we use kriging variance as the primary uncertainty measure
+    has_uncertainties <- "is_interpolated" %in% names(cores_stratum)
 
     harmonization_var_mean <- 0  # Default if no uncertainty data
 
     if (has_uncertainties) {
-      # Extract harmonization uncertainties
-      harmonization_se <- cores_stratum$soc_se_combined
-      harmonization_var <- harmonization_se^2
-
-      # Calculate mean variance for this stratum/depth
-      harmonization_var_mean <- mean(harmonization_var, na.rm = TRUE)
-
       # Check interpolation status
       n_interpolated <- sum(cores_stratum$is_interpolated, na.rm = TRUE)
       n_measured <- sum(!cores_stratum$is_interpolated, na.rm = TRUE)
 
-      log_message(sprintf("  Module 03 uncertainties: mean SE = %.2f g/kg",
-                         sqrt(harmonization_var_mean)))
       log_message(sprintf("  Depths: %d measured, %d interpolated",
                          n_measured, n_interpolated))
 
@@ -602,11 +599,13 @@ for (depth in STANDARD_DEPTHS) {
       if ("measurement_cv" %in% names(cores_stratum)) {
         mean_cv <- mean(cores_stratum$measurement_cv, na.rm = TRUE)
         if (!is.na(mean_cv) && mean_cv > 0) {
-          log_message(sprintf("  Mean measurement CV: %.1f%%", mean_cv))
+          log_message(sprintf("  Mean measurement CV: %.1f%%", mean_cv * 100))
         }
       }
+
+      log_message("  Using kriging variance for uncertainty quantification")
     } else {
-      log_message("  No Module 03 uncertainty data - using kriging variance only", "WARNING")
+      log_message("  No Module 03 metadata - using kriging variance only", "WARNING")
     }
 
     # ========================================================================
@@ -623,7 +622,7 @@ for (depth in STANDARD_DEPTHS) {
     # Fit variogram
     vgm_result <- fit_variogram_auto(
       sp_data = cores_sp,
-      formula = soc_harmonized ~ 1,
+      formula = carbon_stock_kg_m2 ~ 1,
       cutoff = cutoff
     )
     
@@ -651,7 +650,7 @@ for (depth in STANDARD_DEPTHS) {
 
     cv_result <- crossvalidate_kriging(
       sp_data = cores_sp,
-      formula = soc_harmonized ~ 1,
+      formula = carbon_stock_kg_m2 ~ 1,
       vgm_model = vgm_result$model
     )
     
@@ -686,18 +685,18 @@ for (depth in STANDARD_DEPTHS) {
 
         # For simple kriging, we need to specify a known mean (beta parameter)
         # Use the sample mean for this stratum/depth
-        global_mean <- mean(cores_sp$soc_harmonized, na.rm = TRUE)
+        global_mean <- mean(cores_sp$carbon_stock_kg_m2, na.rm = TRUE)
 
         # Simple kriging CV using beta parameter
         cv_result_sk <- tryCatch({
           # Note: gstat's krige.cv doesn't directly support beta parameter
           # We implement it by de-meaning the data, doing OK, then adding mean back
           cores_sp_demeaned <- cores_sp
-          cores_sp_demeaned$soc_demeaned <- cores_sp$soc_harmonized - global_mean
+          cores_sp_demeaned$carbon_stock_demeaned <- cores_sp$carbon_stock_kg_m2 - global_mean
 
           # Perform CV on demeaned data
           cv_sk <- krige.cv(
-            formula = soc_demeaned ~ 1,
+            formula = carbon_stock_demeaned ~ 1,
             locations = cores_sp_demeaned,
             model = vgm_result$model,
             nfold = CV_FOLDS,
@@ -802,7 +801,7 @@ for (depth in STANDARD_DEPTHS) {
 
     krige_result <- tryCatch({
       krige(
-        formula = soc_harmonized ~ 1,
+        formula = carbon_stock_kg_m2 ~ 1,
         locations = cores_sp,
         newdata = pred_grid_sp,
         model = vgm_result$model
@@ -886,7 +885,7 @@ for (depth in STANDARD_DEPTHS) {
 
     # Save prediction raster
     pred_file <- file.path("outputs/predictions/kriging",
-                          sprintf("soc_%s_%.0fcm.tif",
+                          sprintf("carbon_stock_%s_%.0fcm.tif",
                                   gsub(" ", "_", stratum_name), depth))
     writeRaster(pred_raster, pred_file, overwrite = TRUE)
 
@@ -1037,23 +1036,24 @@ for (stratum_name in unique(cores_standard$stratum)) {
     log_message(sprintf("  Layer %d: %d-%d cm (midpoint %.1f cm, thickness %d cm)",
                        i, depth_top, depth_bottom, depth_midpoint, thickness_cm))
 
-    # Load SOC prediction raster for this depth midpoint
-    soc_file <- file.path("outputs/predictions/kriging",
-                          sprintf("soc_%s_%.1fcm.tif",
-                                 gsub(" ", "_", stratum_name),
-                                 depth_midpoint))
+    # Load carbon stock prediction raster for this depth midpoint
+    # Note: Carbon stocks are already calculated in Module 03 as kg/m² per depth increment
+    stock_file_kgm2 <- file.path("outputs/predictions/kriging",
+                                  sprintf("carbon_stock_%s_%.0fcm.tif",
+                                         gsub(" ", "_", stratum_name),
+                                         depth_midpoint))
 
-    if (!file.exists(soc_file)) {
-      log_message(sprintf("    SOC file not found: %s - skipping", basename(soc_file)), "WARNING")
+    if (!file.exists(stock_file_kgm2)) {
+      log_message(sprintf("    Carbon stock file not found: %s - skipping",
+                         basename(stock_file_kgm2)), "WARNING")
       next
     }
 
-    soc_raster <- rast(soc_file)
+    stock_raster_kgm2 <- rast(stock_file_kgm2)
 
-    # Convert SOC concentration (g/kg) to SOC stock (Mg C/ha)
-    # Formula: Stock (Mg/ha) = SOC (g/kg) × BD (g/cm³) × thickness (cm) × 10
-    # The factor 10 converts from g/cm² to Mg/ha
-    stock_raster <- soc_raster * bd_value * thickness_cm * 10
+    # Convert carbon stock from kg/m² to Mg C/ha for VM0033 reporting
+    # Conversion: 1 kg/m² = 10 Mg/ha
+    stock_raster <- stock_raster_kgm2 * 10
 
     # Save layer stock
     stock_file <- file.path("outputs/predictions/stocks",
@@ -1067,17 +1067,18 @@ for (stratum_name in unique(cores_standard$stratum)) {
     mean_stock <- mean(values(stock_raster), na.rm = TRUE)
     log_message(sprintf("    Mean stock: %.2f Mg C/ha", mean_stock))
 
-    # Propagate uncertainty to stock
-    se_file <- file.path("outputs/predictions/uncertainty",
-                        sprintf("se_combined_%s_%.1fcm.tif",
-                               gsub(" ", "_", stratum_name),
-                               depth_midpoint))
+    # Propagate uncertainty to stock (Mg C/ha)
+    # Carbon stock SE in kg/m² from kriging
+    se_file_kgm2 <- file.path("outputs/predictions/uncertainty",
+                              sprintf("se_combined_%s_%.0fcm.tif",
+                                     gsub(" ", "_", stratum_name),
+                                     depth_midpoint))
 
-    if (file.exists(se_file)) {
-      se_raster <- rast(se_file)
+    if (file.exists(se_file_kgm2)) {
+      se_raster_kgm2 <- rast(se_file_kgm2)
 
-      # Stock SE = SOC_SE × BD × thickness × 10
-      stock_se_raster <- se_raster * bd_value * thickness_cm * 10
+      # Convert SE from kg/m² to Mg C/ha: multiply by 10
+      stock_se_raster <- se_raster_kgm2 * 10
 
       # Save stock SE
       stock_se_file <- file.path("outputs/predictions/stocks",
@@ -1177,9 +1178,9 @@ if (nrow(cv_results_all) > 0) {
     scale_fill_manual(values = STRATUM_COLORS) +
     labs(
       title = "Kriging Cross-Validation RMSE",
-      subtitle = "By stratum and depth",
+      subtitle = "By stratum and depth (carbon stock predictions)",
       x = "Depth (cm)",
-      y = "CV RMSE (g/kg)",
+      y = "CV RMSE (kg C/m²)",
       fill = "Stratum"
     ) +
     theme_minimal() +
@@ -1313,16 +1314,22 @@ if (nrow(cv_results_all) > 0) {
 }
 
 cat("\nOutputs:\n")
-cat("  SOC Predictions (g/kg): outputs/predictions/kriging/\n")
-cat("  SOC Uncertainty: outputs/predictions/uncertainty/\n")
-cat("  SOC Stocks (Mg C/ha): outputs/predictions/stocks/\n")
+cat("  Carbon Stock Predictions (kg/m²): outputs/predictions/kriging/\n")
+cat("  Carbon Stock Uncertainty: outputs/predictions/uncertainty/\n")
+cat("  VM0033 Stocks (Mg C/ha): outputs/predictions/stocks/\n")
 cat("  Area of Applicability: outputs/predictions/aoa/\n")
 cat("  Variogram Models: outputs/models/kriging/\n")
 cat("  Diagnostics: diagnostics/variograms/ and diagnostics/crossvalidation/\n")
 
+cat("\nKey Changes:\n")
+cat("  ✓ Modeling carbon stocks (kg/m²) directly from Module 03 harmonization\n")
+cat("  ✓ No SOC→stock conversion needed (stocks pre-calculated from SOC + BD)\n")
+cat("  ✓ VM0033 reporting stocks converted to Mg C/ha (multiply by 10)\n")
+
 cat("\nNext steps:\n")
 cat("  1. Review variogram plots in diagnostics/variograms/\n")
 cat("  2. Check CV results in diagnostics/crossvalidation/\n")
-cat("  3. Run: source('05_raster_predictions_rf_bluecarbon.R')\n\n")
+cat("  3. Review carbon stock prediction maps by stratum and depth\n")
+cat("  4. Run: source('05_raster_predictions_rf_bluecarbon.R')\n\n")
 
 log_message("=== MODULE 04 COMPLETE ===")

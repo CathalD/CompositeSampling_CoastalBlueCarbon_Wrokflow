@@ -19,19 +19,25 @@
 #   σ²_posterior = 1 / (τ_prior + τ_field)
 #
 # INPUTS:
-#   - data_prior/soc_prior_mean_*.tif (from Module 00C)
-#   - data_prior/soc_prior_se_*.tif (from Module 00C)
-#   - outputs/predictions/rf/soc_rf_*.tif (from Module 05)
-#   - outputs/predictions/rf/soc_rf_se_*.tif (from Module 05)
+#   - data_prior/carbon_stock_prior_mean_*.tif (from Module 00C - carbon stocks kg/m²)
+#   - data_prior/carbon_stock_prior_se_*.tif (from Module 00C - carbon stocks kg/m²)
+#   - outputs/predictions/rf/carbon_stock_rf_*.tif (from Module 05 - carbon stocks kg/m²)
+#   - outputs/predictions/rf/se_combined_*.tif (from Module 05 - uncertainty kg/m²)
+#   OR
+#   - outputs/predictions/kriging/carbon_stock_*_*.tif (from Module 04 - carbon stocks kg/m²)
+#   - outputs/predictions/kriging/se_combined_*_*.tif (from Module 04 - uncertainty kg/m²)
 #   - data_processed/cores_harmonized_bluecarbon.rds (sample locations)
 #
 # OUTPUTS:
-#   - outputs/predictions/posterior/soc_posterior_mean_*.tif
-#   - outputs/predictions/posterior/soc_posterior_se_*.tif
-#   - outputs/predictions/posterior/soc_posterior_conservative_*.tif
+#   - outputs/predictions/posterior/carbon_stock_posterior_mean_*.tif (kg/m²)
+#   - outputs/predictions/posterior/carbon_stock_posterior_se_*.tif (kg/m²)
+#   - outputs/predictions/posterior/carbon_stock_posterior_conservative_*.tif (kg/m²)
 #   - diagnostics/bayesian/information_gain_*.tif
 #   - diagnostics/bayesian/uncertainty_reduction.csv
 #   - diagnostics/bayesian/prior_likelihood_posterior_comparison.png
+#
+# NOTE: All units are carbon stocks (kg/m²) for consistency with the updated workflow.
+#       Prior and likelihood must both be in kg/m² for proper Bayesian updating.
 #
 # ============================================================================
 
@@ -112,20 +118,24 @@ samples_sf <- st_transform(samples_sf, crs = PROCESSING_CRS)
 # ============================================================================
 
 log_message("\nChecking for likelihood maps (RF or Kriging)...")
+log_message("Note: Looking for carbon stock predictions (kg/m²) from updated workflow")
 
-# Check RF
+# Check RF (updated to carbon stock files)
 rf_dir <- "outputs/predictions/rf"
-rf_files <- list.files(rf_dir, pattern = "soc_rf_[0-9.]+cm\\.tif$", full.names = TRUE)
+rf_files <- list.files(rf_dir, pattern = "^carbon_stock_rf_[0-9]+cm\\.tif$", full.names = TRUE)
 
-# Check Kriging
+# Check Kriging (updated to carbon stock files)
 kriging_dir <- "outputs/predictions/kriging"
-kriging_files <- list.files(kriging_dir, pattern = "^soc_[0-9.]+cm\\.tif$", full.names = TRUE)
+kriging_files <- list.files(kriging_dir, pattern = "^carbon_stock_.*_[0-9]+cm\\.tif$", full.names = TRUE)
 
 use_rf <- length(rf_files) > 0
 use_kriging <- length(kriging_files) > 0
 
 if (!use_rf && !use_kriging) {
   stop("No likelihood maps found.\n",
+       "Expected files:\n",
+       "  RF: outputs/predictions/rf/carbon_stock_rf_*cm.tif\n",
+       "  Kriging: outputs/predictions/kriging/carbon_stock_*_*cm.tif\n",
        "Please run Module 04 (Kriging) or Module 05 (RF) first to generate predictions.")
 }
 
@@ -135,11 +145,11 @@ if (use_rf && use_kriging) {
   likelihood_method <- "rf"
   likelihood_dir <- rf_dir
 } else if (use_rf) {
-  log_message("Using RF for likelihood")
+  log_message(sprintf("Using RF for likelihood (%d carbon stock files found)", length(rf_files)))
   likelihood_method <- "rf"
   likelihood_dir <- rf_dir
 } else {
-  log_message("Using Kriging for likelihood")
+  log_message(sprintf("Using Kriging for likelihood (%d carbon stock files found)", length(kriging_files)))
   likelihood_method <- "kriging"
   likelihood_dir <- kriging_dir
 }
@@ -148,7 +158,7 @@ if (use_rf && use_kriging) {
 # LOAD PRIORS
 # ============================================================================
 
-log_message("\nLoading Bayesian priors...")
+log_message("\nLoading Bayesian priors (carbon stocks in kg/m²)...")
 
 if (!dir.exists(BAYESIAN_PRIOR_DIR)) {
   stop(sprintf("Prior directory not found: %s\n", BAYESIAN_PRIOR_DIR),
@@ -161,22 +171,26 @@ vm0033_depths <- c(7.5, 22.5, 40, 75)
 priors <- list()
 
 for (depth in vm0033_depths) {
-  prior_mean_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("soc_prior_mean_%.1fcm.tif", depth))
-  prior_se_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("soc_prior_se_%.1fcm.tif", depth))
+  # Updated to carbon stock prior files (kg/m²)
+  prior_mean_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("carbon_stock_prior_mean_%.1fcm.tif", depth))
+  prior_se_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("carbon_stock_prior_se_%.1fcm.tif", depth))
 
   if (file.exists(prior_mean_file) && file.exists(prior_se_file)) {
     priors[[as.character(depth)]] <- list(
       mean = rast(prior_mean_file),
       se = rast(prior_se_file)
     )
-    log_message(sprintf("  Loaded prior for %.1f cm", depth))
+    log_message(sprintf("  Loaded carbon stock prior for %.1f cm", depth))
   } else {
-    log_message(sprintf("  Prior not found for %.1f cm - skipping", depth), "WARNING")
+    log_message(sprintf("  Carbon stock prior not found for %.1f cm - skipping", depth), "WARNING")
+    log_message(sprintf("    Expected: %s", basename(prior_mean_file)), "WARNING")
   }
 }
 
 if (length(priors) == 0) {
-  stop("No prior maps loaded. Please run Module 00C first.")
+  stop("No carbon stock prior maps loaded.\n",
+       "Please run Module 00C first to process carbon stock priors.\n",
+       "Expected files: data_prior/carbon_stock_prior_mean_*.tif")
 }
 
 # ============================================================================
@@ -268,14 +282,36 @@ for (depth_str in names(priors)) {
   prior_mean <- priors[[depth_str]]$mean
   prior_se <- priors[[depth_str]]$se
 
-  # === Load likelihood (field data) ===
+  # === Load likelihood (field data - carbon stocks in kg/m²) ===
+  # Note: Files use rounded depths (7.5→8, 22.5→22) in filenames
+  depth_rounded <- round(depth)
+
   if (likelihood_method == "rf") {
-    depth_file_str <- gsub("\\.", "_", depth_str)
-    likelihood_mean_file <- file.path(likelihood_dir, sprintf("soc_rf_%scm.tif", depth_file_str))
-    likelihood_se_file <- file.path(likelihood_dir, sprintf("soc_rf_se_%scm.tif", depth_file_str))
+    # RF carbon stock files: carbon_stock_rf_*cm.tif
+    likelihood_mean_file <- file.path(likelihood_dir, sprintf("carbon_stock_rf_%dcm.tif", depth_rounded))
+    # RF uncertainty files: se_combined_*cm.tif
+    likelihood_se_file <- file.path(likelihood_dir, sprintf("se_combined_%dcm.tif", depth_rounded))
   } else {
-    likelihood_mean_file <- file.path(likelihood_dir, sprintf("soc_%.1fcm.tif", depth))
-    likelihood_se_file <- file.path(likelihood_dir, sprintf("soc_se_%.1fcm.tif", depth))
+    # Kriging carbon stock files: carbon_stock_*_*cm.tif (may have stratum name)
+    # Need to find files matching the pattern for this depth
+    kriging_pattern <- sprintf("carbon_stock_.*_%dcm\\.tif$", depth_rounded)
+    kriging_matches <- list.files(likelihood_dir, pattern = kriging_pattern, full.names = TRUE)
+
+    if (length(kriging_matches) > 0) {
+      likelihood_mean_file <- kriging_matches[1]  # Take first match
+    } else {
+      likelihood_mean_file <- ""  # Will fail check below
+    }
+
+    # Kriging uncertainty files: se_combined_*_*cm.tif
+    se_pattern <- sprintf("se_combined_.*_%dcm\\.tif$", depth_rounded)
+    se_matches <- list.files(likelihood_dir, pattern = se_pattern, full.names = TRUE)
+
+    if (length(se_matches) > 0) {
+      likelihood_se_file <- se_matches[1]
+    } else {
+      likelihood_se_file <- ""
+    }
   }
 
   if (!file.exists(likelihood_mean_file)) {
@@ -331,12 +367,13 @@ for (depth_str in names(priors)) {
   # === Save outputs ===
   log_message("  Saving posterior rasters...")
 
+  # Output files: carbon stock posterior estimates (kg/m²)
   out_mean <- file.path("outputs/predictions/posterior",
-                        sprintf("soc_posterior_mean_%.1fcm.tif", depth))
+                        sprintf("carbon_stock_posterior_mean_%.1fcm.tif", depth))
   out_se <- file.path("outputs/predictions/posterior",
-                      sprintf("soc_posterior_se_%.1fcm.tif", depth))
+                      sprintf("carbon_stock_posterior_se_%.1fcm.tif", depth))
   out_conservative <- file.path("outputs/predictions/posterior",
-                               sprintf("soc_posterior_conservative_%.1fcm.tif", depth))
+                               sprintf("carbon_stock_posterior_conservative_%.1fcm.tif", depth))
   out_info_gain <- file.path("diagnostics/bayesian",
                             sprintf("information_gain_%.1fcm.tif", depth))
 
