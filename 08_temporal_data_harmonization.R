@@ -86,10 +86,11 @@ if (length(scenario_dirs) == 0) {
 
 log_message(sprintf("Found %d scenario folder(s):", length(scenario_dirs)))
 
-# Find carbon_stocks_by_stratum_rf.csv in each folder
+# Find carbon_stocks_by_stratum_rf_wide.csv in each folder
+# Wide format contains all 4 VM0033 intervals as columns
 csv_files <- c()
 for (dir in scenario_dirs) {
-  csv_file <- file.path(dir, "carbon_stocks_by_stratum_rf.csv")
+  csv_file <- file.path(dir, "carbon_stocks_by_stratum_rf_wide.csv")
   if (file.exists(csv_file)) {
     csv_files <- c(csv_files, csv_file)
     log_message(sprintf("  - %s", basename(dir)))
@@ -97,7 +98,7 @@ for (dir in scenario_dirs) {
 }
 
 if (length(csv_files) == 0) {
-  stop(sprintf("No carbon_stocks_by_stratum_rf.csv files found in scenario folders.\nPlease check outputs/carbon_stocks/*/"))
+  stop(sprintf("No carbon_stocks_by_stratum_rf_wide.csv files found in scenario folders.\nPlease check outputs/carbon_stocks/*/\nMake sure Module 06 has been run to generate wide-format outputs."))
 }
 
 log_message(sprintf("Found %d carbon stock dataset(s) total", length(csv_files)))
@@ -279,13 +280,19 @@ for (i in 1:nrow(temporal_metadata)) {
   log_message(sprintf("  Loading rasters for: %s", dataset_id))
   any_rasters_found <- TRUE
 
-  # Key rasters to load
+  # Key rasters to load - all 4 VM0033 intervals plus total
+  # VM0033 intervals: 0-15cm, 15-30cm, 30-50cm, 50-100cm
   raster_patterns <- c(
-    surface_mean = "carbon_stock_surface_mean\\.tif$",
-    deep_mean = "carbon_stock_deep_mean\\.tif$",
-    total_mean = "carbon_stock_total_mean\\.tif$",
-    surface_conservative = "carbon_stock_surface_conservative\\.tif$",
-    total_conservative = "carbon_stock_total_conservative\\.tif$"
+    interval_0_15_mean = "carbon_stock_0-15cm_mean\\.tif$",
+    interval_15_30_mean = "carbon_stock_15-30cm_mean\\.tif$",
+    interval_30_50_mean = "carbon_stock_30-50cm_mean\\.tif$",
+    interval_50_100_mean = "carbon_stock_50-100cm_mean\\.tif$",
+    total_mean = "carbon_stock_0-100cm total_mean\\.tif$",
+    interval_0_15_conservative = "carbon_stock_0-15cm_conservative\\.tif$",
+    interval_15_30_conservative = "carbon_stock_15-30cm_conservative\\.tif$",
+    interval_30_50_conservative = "carbon_stock_30-50cm_conservative\\.tif$",
+    interval_50_100_conservative = "carbon_stock_50-100cm_conservative\\.tif$",
+    total_conservative = "carbon_stock_0-100cm total_conservative\\.tif$"
   )
 
   dataset_rasters <- list()

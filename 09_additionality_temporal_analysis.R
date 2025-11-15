@@ -130,31 +130,51 @@ if (run_additionality) {
 
   log_message("\n=== ADDITIONALITY ANALYSIS ===")
 
-  # Get baseline data
+  # Get baseline data - all 4 VM0033 intervals plus total
   baseline_data <- carbon_stocks %>%
     filter(scenario == "BASELINE") %>%
     group_by(stratum) %>%
     summarise(
       baseline_year = first(year),
-      baseline_surface_mean = mean(carbon_stock_surface_mean_Mg_ha, na.rm = TRUE),
-      baseline_deep_mean = mean(carbon_stock_deep_mean_Mg_ha, na.rm = TRUE),
-      baseline_total_mean = mean(carbon_stock_total_mean_Mg_ha, na.rm = TRUE),
-      baseline_surface_se = mean(carbon_stock_surface_se_Mg_ha, na.rm = TRUE),
-      baseline_total_se = mean(carbon_stock_total_se_Mg_ha, na.rm = TRUE),
+      # VM0033 Interval 1: 0-15cm
+      baseline_0_15_mean = mean(`carbon_stock_0-15cm`, na.rm = TRUE),
+      baseline_0_15_se = mean(`carbon_stock_se_0-15cm`, na.rm = TRUE),
+      # VM0033 Interval 2: 15-30cm
+      baseline_15_30_mean = mean(`carbon_stock_15-30cm`, na.rm = TRUE),
+      baseline_15_30_se = mean(`carbon_stock_se_15-30cm`, na.rm = TRUE),
+      # VM0033 Interval 3: 30-50cm
+      baseline_30_50_mean = mean(`carbon_stock_30-50cm`, na.rm = TRUE),
+      baseline_30_50_se = mean(`carbon_stock_se_30-50cm`, na.rm = TRUE),
+      # VM0033 Interval 4: 50-100cm
+      baseline_50_100_mean = mean(`carbon_stock_50-100cm`, na.rm = TRUE),
+      baseline_50_100_se = mean(`carbon_stock_se_50-100cm`, na.rm = TRUE),
+      # Total 0-100cm
+      baseline_total_mean = mean(`carbon_stock_0-100cm total`, na.rm = TRUE),
+      baseline_total_se = mean(`carbon_stock_se_0-100cm total`, na.rm = TRUE),
       .groups = "drop"
     )
 
-  # Get project data (all scenarios starting with "PROJECT")
+  # Get project data (all scenarios starting with "PROJECT") - all 4 VM0033 intervals plus total
   project_data <- carbon_stocks %>%
     filter(grepl("^PROJECT", scenario)) %>%
     group_by(scenario, stratum) %>%
     summarise(
       project_year = first(year),
-      project_surface_mean = mean(carbon_stock_surface_mean_Mg_ha, na.rm = TRUE),
-      project_deep_mean = mean(carbon_stock_deep_mean_Mg_ha, na.rm = TRUE),
-      project_total_mean = mean(carbon_stock_total_mean_Mg_ha, na.rm = TRUE),
-      project_surface_se = mean(carbon_stock_surface_se_Mg_ha, na.rm = TRUE),
-      project_total_se = mean(carbon_stock_total_se_Mg_ha, na.rm = TRUE),
+      # VM0033 Interval 1: 0-15cm
+      project_0_15_mean = mean(`carbon_stock_0-15cm`, na.rm = TRUE),
+      project_0_15_se = mean(`carbon_stock_se_0-15cm`, na.rm = TRUE),
+      # VM0033 Interval 2: 15-30cm
+      project_15_30_mean = mean(`carbon_stock_15-30cm`, na.rm = TRUE),
+      project_15_30_se = mean(`carbon_stock_se_15-30cm`, na.rm = TRUE),
+      # VM0033 Interval 3: 30-50cm
+      project_30_50_mean = mean(`carbon_stock_30-50cm`, na.rm = TRUE),
+      project_30_50_se = mean(`carbon_stock_se_30-50cm`, na.rm = TRUE),
+      # VM0033 Interval 4: 50-100cm
+      project_50_100_mean = mean(`carbon_stock_50-100cm`, na.rm = TRUE),
+      project_50_100_se = mean(`carbon_stock_se_50-100cm`, na.rm = TRUE),
+      # Total 0-100cm
+      project_total_mean = mean(`carbon_stock_0-100cm total`, na.rm = TRUE),
+      project_total_se = mean(`carbon_stock_se_0-100cm total`, na.rm = TRUE),
       .groups = "drop"
     )
 
@@ -167,50 +187,72 @@ if (run_additionality) {
 
     proj_subset <- project_data %>% filter(scenario == proj_scenario)
 
-    # Merge and calculate differences
+    # Merge and calculate differences for all 4 VM0033 intervals + total
     additionality <- inner_join(baseline_data, proj_subset, by = "stratum") %>%
       mutate(
         project_scenario = proj_scenario,
-      # Calculate differences (PROJECT - BASELINE)
-      delta_surface_mean = project_surface_mean - baseline_surface_mean,
-      delta_deep_mean = project_deep_mean - baseline_deep_mean,
-      delta_total_mean = project_total_mean - baseline_total_mean,
 
-      # Propagate uncertainty (add variances)
-      delta_surface_var = baseline_surface_se^2 + project_surface_se^2,
-      delta_total_var = baseline_total_se^2 + project_total_se^2,
-      delta_surface_se = sqrt(delta_surface_var),
-      delta_total_se = sqrt(delta_total_var),
+        # ========== VM0033 INTERVAL 1: 0-15cm ==========
+        delta_0_15_mean = project_0_15_mean - baseline_0_15_mean,
+        delta_0_15_var = baseline_0_15_se^2 + project_0_15_se^2,
+        delta_0_15_se = sqrt(delta_0_15_var),
+        delta_0_15_ci_lower = delta_0_15_mean - 1.96 * delta_0_15_se,
+        delta_0_15_ci_upper = delta_0_15_mean + 1.96 * delta_0_15_se,
+        delta_0_15_conservative = pmax(0, delta_0_15_ci_lower),
+        pct_change_0_15 = 100 * delta_0_15_mean / baseline_0_15_mean,
+        t_stat_0_15 = delta_0_15_mean / delta_0_15_se,
+        p_value_0_15 = 2 * pt(-abs(t_stat_0_15), df = Inf),
+        significant_0_15 = p_value_0_15 < (1 - ADDITIONALITY_CONFIDENCE),
 
-      # Calculate 95% CI
-      delta_surface_ci_lower = delta_surface_mean - 1.96 * delta_surface_se,
-      delta_surface_ci_upper = delta_surface_mean + 1.96 * delta_surface_se,
-      delta_total_ci_lower = delta_total_mean - 1.96 * delta_total_se,
-      delta_total_ci_upper = delta_total_mean + 1.96 * delta_total_se,
+        # ========== VM0033 INTERVAL 2: 15-30cm ==========
+        delta_15_30_mean = project_15_30_mean - baseline_15_30_mean,
+        delta_15_30_var = baseline_15_30_se^2 + project_15_30_se^2,
+        delta_15_30_se = sqrt(delta_15_30_var),
+        delta_15_30_ci_lower = delta_15_30_mean - 1.96 * delta_15_30_se,
+        delta_15_30_ci_upper = delta_15_30_mean + 1.96 * delta_15_30_se,
+        delta_15_30_conservative = pmax(0, delta_15_30_ci_lower),
+        pct_change_15_30 = 100 * delta_15_30_mean / baseline_15_30_mean,
+        t_stat_15_30 = delta_15_30_mean / delta_15_30_se,
+        p_value_15_30 = 2 * pt(-abs(t_stat_15_30), df = Inf),
+        significant_15_30 = p_value_15_30 < (1 - ADDITIONALITY_CONFIDENCE),
 
-      # Conservative estimate for VM0033 (95% CI lower bound)
-      delta_surface_conservative = pmax(0, delta_surface_ci_lower),
-      delta_total_conservative = pmax(0, delta_total_ci_lower),
+        # ========== VM0033 INTERVAL 3: 30-50cm ==========
+        delta_30_50_mean = project_30_50_mean - baseline_30_50_mean,
+        delta_30_50_var = baseline_30_50_se^2 + project_30_50_se^2,
+        delta_30_50_se = sqrt(delta_30_50_var),
+        delta_30_50_ci_lower = delta_30_50_mean - 1.96 * delta_30_50_se,
+        delta_30_50_ci_upper = delta_30_50_mean + 1.96 * delta_30_50_se,
+        delta_30_50_conservative = pmax(0, delta_30_50_ci_lower),
+        pct_change_30_50 = 100 * delta_30_50_mean / baseline_30_50_mean,
+        t_stat_30_50 = delta_30_50_mean / delta_30_50_se,
+        p_value_30_50 = 2 * pt(-abs(t_stat_30_50), df = Inf),
+        significant_30_50 = p_value_30_50 < (1 - ADDITIONALITY_CONFIDENCE),
 
-      # Percent change
-      pct_change_surface = 100 * delta_surface_mean / baseline_surface_mean,
-      pct_change_total = 100 * delta_total_mean / baseline_total_mean,
+        # ========== VM0033 INTERVAL 4: 50-100cm ==========
+        delta_50_100_mean = project_50_100_mean - baseline_50_100_mean,
+        delta_50_100_var = baseline_50_100_se^2 + project_50_100_se^2,
+        delta_50_100_se = sqrt(delta_50_100_var),
+        delta_50_100_ci_lower = delta_50_100_mean - 1.96 * delta_50_100_se,
+        delta_50_100_ci_upper = delta_50_100_mean + 1.96 * delta_50_100_se,
+        delta_50_100_conservative = pmax(0, delta_50_100_ci_lower),
+        pct_change_50_100 = 100 * delta_50_100_mean / baseline_50_100_mean,
+        t_stat_50_100 = delta_50_100_mean / delta_50_100_se,
+        p_value_50_100 = 2 * pt(-abs(t_stat_50_100), df = Inf),
+        significant_50_100 = p_value_50_100 < (1 - ADDITIONALITY_CONFIDENCE),
 
-      # T-test for significance
-      t_stat_surface = delta_surface_mean / delta_surface_se,
-      t_stat_total = delta_total_mean / delta_total_se,
-      p_value_surface = 2 * pt(-abs(t_stat_surface), df = Inf),  # Z-test approximation
-      p_value_total = 2 * pt(-abs(t_stat_total), df = Inf),
+        # ========== TOTAL 0-100cm ==========
+        delta_total_mean = project_total_mean - baseline_total_mean,
+        delta_total_var = baseline_total_se^2 + project_total_se^2,
+        delta_total_se = sqrt(delta_total_var),
+        delta_total_ci_lower = delta_total_mean - 1.96 * delta_total_se,
+        delta_total_ci_upper = delta_total_mean + 1.96 * delta_total_se,
+        delta_total_conservative = pmax(0, delta_total_ci_lower),
+        pct_change_total = 100 * delta_total_mean / baseline_total_mean,
+        t_stat_total = delta_total_mean / delta_total_se,
+        p_value_total = 2 * pt(-abs(t_stat_total), df = Inf),
+        significant_total = p_value_total < (1 - ADDITIONALITY_CONFIDENCE),
 
-      # Significance flags
-      significant_surface = p_value_surface < (1 - ADDITIONALITY_CONFIDENCE),
-      significant_total = p_value_total < (1 - ADDITIONALITY_CONFIDENCE),
-
-      # Effect size (Cohen's d)
-      pooled_se_surface = sqrt((baseline_surface_se^2 + project_surface_se^2) / 2),
-      cohens_d_surface = delta_surface_mean / pooled_se_surface,
-
-        # Additionality assessment
+        # Additionality assessment (based on total 0-100cm)
         additionality_status = case_when(
           !significant_total ~ "Not Significant",
           delta_total_conservative <= 0 ~ "No Net Gain (conservative)",
@@ -224,32 +266,76 @@ if (run_additionality) {
     # Store results
     all_additionality[[proj_scenario]] <- additionality
 
-    # Display results for this scenario
+    # Display results for this scenario - all 4 VM0033 intervals + total
     cat("\n========================================\n")
     cat(sprintf("ADDITIONALITY: %s vs BASELINE\n", proj_scenario))
     cat("========================================\n\n")
 
     for (i in 1:nrow(additionality)) {
       cat(sprintf("Stratum: %s\n", additionality$stratum[i]))
-    cat(sprintf("  Baseline (0-100 cm): %.2f ± %.2f Mg C/ha\n",
-                additionality$baseline_total_mean[i],
-                additionality$baseline_total_se[i]))
-    cat(sprintf("  Project (0-100 cm):  %.2f ± %.2f Mg C/ha\n",
-                additionality$project_total_mean[i],
-                additionality$project_total_se[i]))
-    cat(sprintf("  Difference (mean):   %.2f ± %.2f Mg C/ha (%.1f%%)\n",
-                additionality$delta_total_mean[i],
-                additionality$delta_total_se[i],
-                additionality$pct_change_total[i]))
-    cat(sprintf("  95%% CI: [%.2f, %.2f] Mg C/ha\n",
-                additionality$delta_total_ci_lower[i],
-                additionality$delta_total_ci_upper[i]))
-    cat(sprintf("  Conservative estimate: %.2f Mg C/ha\n",
-                additionality$delta_total_conservative[i]))
-      cat(sprintf("  Significance: %s (p = %.4f)\n",
-                  ifelse(additionality$significant_total[i], "YES", "NO"),
-                  additionality$p_value_total[i]))
-      cat(sprintf("  Status: %s\n", additionality$additionality_status[i]))
+      cat("\n")
+
+      # VM0033 Interval 1: 0-15cm
+      cat("  INTERVAL 1 (0-15cm):\n")
+      cat(sprintf("    Baseline: %.2f ± %.2f Mg C/ha\n",
+                  additionality$baseline_0_15_mean[i], additionality$baseline_0_15_se[i]))
+      cat(sprintf("    Project:  %.2f ± %.2f Mg C/ha\n",
+                  additionality$project_0_15_mean[i], additionality$project_0_15_se[i]))
+      cat(sprintf("    Delta:    %.2f ± %.2f Mg C/ha (%.1f%%) %s\n",
+                  additionality$delta_0_15_mean[i], additionality$delta_0_15_se[i],
+                  additionality$pct_change_0_15[i],
+                  ifelse(additionality$significant_0_15[i], "*", "")))
+
+      # VM0033 Interval 2: 15-30cm
+      cat("  INTERVAL 2 (15-30cm):\n")
+      cat(sprintf("    Baseline: %.2f ± %.2f Mg C/ha\n",
+                  additionality$baseline_15_30_mean[i], additionality$baseline_15_30_se[i]))
+      cat(sprintf("    Project:  %.2f ± %.2f Mg C/ha\n",
+                  additionality$project_15_30_mean[i], additionality$project_15_30_se[i]))
+      cat(sprintf("    Delta:    %.2f ± %.2f Mg C/ha (%.1f%%) %s\n",
+                  additionality$delta_15_30_mean[i], additionality$delta_15_30_se[i],
+                  additionality$pct_change_15_30[i],
+                  ifelse(additionality$significant_15_30[i], "*", "")))
+
+      # VM0033 Interval 3: 30-50cm
+      cat("  INTERVAL 3 (30-50cm):\n")
+      cat(sprintf("    Baseline: %.2f ± %.2f Mg C/ha\n",
+                  additionality$baseline_30_50_mean[i], additionality$baseline_30_50_se[i]))
+      cat(sprintf("    Project:  %.2f ± %.2f Mg C/ha\n",
+                  additionality$project_30_50_mean[i], additionality$project_30_50_se[i]))
+      cat(sprintf("    Delta:    %.2f ± %.2f Mg C/ha (%.1f%%) %s\n",
+                  additionality$delta_30_50_mean[i], additionality$delta_30_50_se[i],
+                  additionality$pct_change_30_50[i],
+                  ifelse(additionality$significant_30_50[i], "*", "")))
+
+      # VM0033 Interval 4: 50-100cm
+      cat("  INTERVAL 4 (50-100cm):\n")
+      cat(sprintf("    Baseline: %.2f ± %.2f Mg C/ha\n",
+                  additionality$baseline_50_100_mean[i], additionality$baseline_50_100_se[i]))
+      cat(sprintf("    Project:  %.2f ± %.2f Mg C/ha\n",
+                  additionality$project_50_100_mean[i], additionality$project_50_100_se[i]))
+      cat(sprintf("    Delta:    %.2f ± %.2f Mg C/ha (%.1f%%) %s\n",
+                  additionality$delta_50_100_mean[i], additionality$delta_50_100_se[i],
+                  additionality$pct_change_50_100[i],
+                  ifelse(additionality$significant_50_100[i], "*", "")))
+
+      # Total 0-100cm
+      cat("  TOTAL (0-100cm):\n")
+      cat(sprintf("    Baseline: %.2f ± %.2f Mg C/ha\n",
+                  additionality$baseline_total_mean[i], additionality$baseline_total_se[i]))
+      cat(sprintf("    Project:  %.2f ± %.2f Mg C/ha\n",
+                  additionality$project_total_mean[i], additionality$project_total_se[i]))
+      cat(sprintf("    Delta:    %.2f ± %.2f Mg C/ha (%.1f%%) %s\n",
+                  additionality$delta_total_mean[i], additionality$delta_total_se[i],
+                  additionality$pct_change_total[i],
+                  ifelse(additionality$significant_total[i], "*", "")))
+      cat(sprintf("    95%% CI: [%.2f, %.2f] Mg C/ha\n",
+                  additionality$delta_total_ci_lower[i], additionality$delta_total_ci_upper[i]))
+      cat(sprintf("    Conservative: %.2f Mg C/ha\n",
+                  additionality$delta_total_conservative[i]))
+      cat(sprintf("    Status: %s\n", additionality$additionality_status[i]))
+      cat("\n")
+      cat("  * = Statistically significant at 95% confidence\n")
       cat("\n")
     }
 
@@ -294,8 +380,16 @@ if (run_additionality) {
 
     if (baseline_id %in% names(rasters) && project_id %in% names(rasters)) {
 
-      # Calculate difference rasters for each depth
-      for (depth_type in c("surface_mean", "total_mean", "surface_conservative", "total_conservative")) {
+      # Calculate difference rasters for all 4 VM0033 intervals + total
+      depth_types <- c(
+        "interval_0_15_mean", "interval_15_30_mean", "interval_30_50_mean",
+        "interval_50_100_mean", "total_mean",
+        "interval_0_15_conservative", "interval_15_30_conservative",
+        "interval_30_50_conservative", "interval_50_100_conservative",
+        "total_conservative"
+      )
+
+      for (depth_type in depth_types) {
 
         if (depth_type %in% names(rasters[[baseline_id]]) &&
             depth_type %in% names(rasters[[project_id]])) {
@@ -303,7 +397,7 @@ if (run_additionality) {
           baseline_raster <- rasters[[baseline_id]][[depth_type]]
           project_raster <- rasters[[project_id]][[depth_type]]
 
-          # Calculate difference
+          # Calculate difference (PROJECT - BASELINE)
           diff_raster <- project_raster - baseline_raster
 
           # Save difference raster
@@ -346,7 +440,7 @@ if (run_temporal_change) {
     ) %>%
     ungroup()
 
-  # Calculate year-to-year changes
+  # Calculate year-to-year changes for all 4 VM0033 intervals + total
   temporal_trends <- carbon_stocks %>%
     arrange(stratum, scenario, year) %>%
     group_by(stratum, scenario) %>%
@@ -357,18 +451,40 @@ if (run_temporal_change) {
       last_year = max(year),
       year_span = max(year) - min(year),
 
-      # Carbon stocks at first and last timepoint
-      carbon_t0 = first(carbon_stock_total_mean_Mg_ha),
-      carbon_tn = last(carbon_stock_total_mean_Mg_ha),
+      # VM0033 Interval 1: 0-15cm
+      carbon_0_15_t0 = first(`carbon_stock_0-15cm`),
+      carbon_0_15_tn = last(`carbon_stock_0-15cm`),
+      change_0_15 = carbon_0_15_tn - carbon_0_15_t0,
+      rate_0_15_Mg_ha_yr = ifelse(year_span > 0, change_0_15 / year_span, NA),
+      pct_change_0_15 = 100 * change_0_15 / carbon_0_15_t0,
 
-      # Total change
-      total_change = carbon_tn - carbon_t0,
+      # VM0033 Interval 2: 15-30cm
+      carbon_15_30_t0 = first(`carbon_stock_15-30cm`),
+      carbon_15_30_tn = last(`carbon_stock_15-30cm`),
+      change_15_30 = carbon_15_30_tn - carbon_15_30_t0,
+      rate_15_30_Mg_ha_yr = ifelse(year_span > 0, change_15_30 / year_span, NA),
+      pct_change_15_30 = 100 * change_15_30 / carbon_15_30_t0,
 
-      # Annualized rate (Mg C/ha/year)
-      rate_Mg_ha_yr = ifelse(year_span > 0, total_change / year_span, NA),
+      # VM0033 Interval 3: 30-50cm
+      carbon_30_50_t0 = first(`carbon_stock_30-50cm`),
+      carbon_30_50_tn = last(`carbon_stock_30-50cm`),
+      change_30_50 = carbon_30_50_tn - carbon_30_50_t0,
+      rate_30_50_Mg_ha_yr = ifelse(year_span > 0, change_30_50 / year_span, NA),
+      pct_change_30_50 = 100 * change_30_50 / carbon_30_50_t0,
 
-      # Percent change
-      pct_change = 100 * total_change / carbon_t0,
+      # VM0033 Interval 4: 50-100cm
+      carbon_50_100_t0 = first(`carbon_stock_50-100cm`),
+      carbon_50_100_tn = last(`carbon_stock_50-100cm`),
+      change_50_100 = carbon_50_100_tn - carbon_50_100_t0,
+      rate_50_100_Mg_ha_yr = ifelse(year_span > 0, change_50_100 / year_span, NA),
+      pct_change_50_100 = 100 * change_50_100 / carbon_50_100_t0,
+
+      # Total 0-100cm
+      carbon_total_t0 = first(`carbon_stock_0-100cm total`),
+      carbon_total_tn = last(`carbon_stock_0-100cm total`),
+      total_change = carbon_total_tn - carbon_total_t0,
+      rate_total_Mg_ha_yr = ifelse(year_span > 0, total_change / year_span, NA),
+      pct_change_total = 100 * total_change / carbon_total_t0,
 
       .groups = "drop"
     )
@@ -383,13 +499,47 @@ if (run_temporal_change) {
                 temporal_trends$year_span[i],
                 temporal_trends$first_year[i],
                 temporal_trends$last_year[i]))
-    cat(sprintf("  Carbon at t0:  %.2f Mg C/ha\n", temporal_trends$carbon_t0[i]))
-    cat(sprintf("  Carbon at tn:  %.2f Mg C/ha\n", temporal_trends$carbon_tn[i]))
-    cat(sprintf("  Total change:  %.2f Mg C/ha (%.1f%%)\n",
-                temporal_trends$total_change[i],
-                temporal_trends$pct_change[i]))
-    cat(sprintf("  Sequestration rate: %.3f Mg C/ha/yr\n",
-                temporal_trends$rate_Mg_ha_yr[i]))
+    cat("\n")
+
+    # Interval 1: 0-15cm
+    cat("  INTERVAL 1 (0-15cm):\n")
+    cat(sprintf("    t0: %.2f Mg C/ha → tn: %.2f Mg C/ha\n",
+                temporal_trends$carbon_0_15_t0[i], temporal_trends$carbon_0_15_tn[i]))
+    cat(sprintf("    Change: %.2f Mg C/ha (%.1f%%), Rate: %.3f Mg C/ha/yr\n",
+                temporal_trends$change_0_15[i], temporal_trends$pct_change_0_15[i],
+                temporal_trends$rate_0_15_Mg_ha_yr[i]))
+
+    # Interval 2: 15-30cm
+    cat("  INTERVAL 2 (15-30cm):\n")
+    cat(sprintf("    t0: %.2f Mg C/ha → tn: %.2f Mg C/ha\n",
+                temporal_trends$carbon_15_30_t0[i], temporal_trends$carbon_15_30_tn[i]))
+    cat(sprintf("    Change: %.2f Mg C/ha (%.1f%%), Rate: %.3f Mg C/ha/yr\n",
+                temporal_trends$change_15_30[i], temporal_trends$pct_change_15_30[i],
+                temporal_trends$rate_15_30_Mg_ha_yr[i]))
+
+    # Interval 3: 30-50cm
+    cat("  INTERVAL 3 (30-50cm):\n")
+    cat(sprintf("    t0: %.2f Mg C/ha → tn: %.2f Mg C/ha\n",
+                temporal_trends$carbon_30_50_t0[i], temporal_trends$carbon_30_50_tn[i]))
+    cat(sprintf("    Change: %.2f Mg C/ha (%.1f%%), Rate: %.3f Mg C/ha/yr\n",
+                temporal_trends$change_30_50[i], temporal_trends$pct_change_30_50[i],
+                temporal_trends$rate_30_50_Mg_ha_yr[i]))
+
+    # Interval 4: 50-100cm
+    cat("  INTERVAL 4 (50-100cm):\n")
+    cat(sprintf("    t0: %.2f Mg C/ha → tn: %.2f Mg C/ha\n",
+                temporal_trends$carbon_50_100_t0[i], temporal_trends$carbon_50_100_tn[i]))
+    cat(sprintf("    Change: %.2f Mg C/ha (%.1f%%), Rate: %.3f Mg C/ha/yr\n",
+                temporal_trends$change_50_100[i], temporal_trends$pct_change_50_100[i],
+                temporal_trends$rate_50_100_Mg_ha_yr[i]))
+
+    # Total 0-100cm
+    cat("  TOTAL (0-100cm):\n")
+    cat(sprintf("    t0: %.2f Mg C/ha → tn: %.2f Mg C/ha\n",
+                temporal_trends$carbon_total_t0[i], temporal_trends$carbon_total_tn[i]))
+    cat(sprintf("    Change: %.2f Mg C/ha (%.1f%%), Rate: %.3f Mg C/ha/yr\n",
+                temporal_trends$total_change[i], temporal_trends$pct_change_total[i],
+                temporal_trends$rate_total_Mg_ha_yr[i]))
     cat("\n")
   }
 
@@ -404,16 +554,17 @@ if (run_temporal_change) {
     stratum_data <- carbon_stocks %>%
       filter(stratum == stratum_name)
 
-    p <- ggplot(stratum_data, aes(x = year, y = carbon_stock_total_mean_Mg_ha, color = scenario)) +
+    # Plot total 0-100cm carbon stock trajectory
+    p <- ggplot(stratum_data, aes(x = year, y = `carbon_stock_0-100cm total`, color = scenario)) +
       geom_line(size = 1) +
       geom_point(size = 3) +
-      geom_errorbar(aes(ymin = carbon_stock_total_mean_Mg_ha - carbon_stock_total_se_Mg_ha,
-                        ymax = carbon_stock_total_mean_Mg_ha + carbon_stock_total_se_Mg_ha),
+      geom_errorbar(aes(ymin = `carbon_stock_0-100cm total` - `carbon_stock_se_0-100cm total`,
+                        ymax = `carbon_stock_0-100cm total` + `carbon_stock_se_0-100cm total`),
                     width = 0.5) +
       labs(
         title = sprintf("Carbon Stock Trajectory: %s", stratum_name),
         x = "Year",
-        y = "Total Carbon Stock (Mg C/ha)",
+        y = "Total Carbon Stock 0-100cm (Mg C/ha)",
         color = "Scenario"
       ) +
       theme_bw() +
@@ -424,9 +575,44 @@ if (run_temporal_change) {
       )
 
     plot_file <- file.path("outputs/temporal_change/plots",
-                          sprintf("trajectory_%s.png", gsub(" ", "_", tolower(stratum_name))))
+                          sprintf("trajectory_total_%s.png", gsub(" ", "_", tolower(stratum_name))))
     ggsave(plot_file, p, width = 8, height = 6, dpi = 300)
     log_message(sprintf("  Saved plot: %s", basename(plot_file)))
+
+    # Create stacked area plot showing all 4 VM0033 intervals
+    # Reshape data for stacked plot
+    stratum_long <- stratum_data %>%
+      select(year, scenario, `carbon_stock_0-15cm`, `carbon_stock_15-30cm`,
+             `carbon_stock_30-50cm`, `carbon_stock_50-100cm`) %>%
+      pivot_longer(cols = starts_with("carbon_stock_"),
+                   names_to = "interval",
+                   values_to = "carbon_stock") %>%
+      mutate(interval = factor(interval,
+                              levels = c("carbon_stock_50-100cm", "carbon_stock_30-50cm",
+                                       "carbon_stock_15-30cm", "carbon_stock_0-15cm"),
+                              labels = c("50-100cm", "30-50cm", "15-30cm", "0-15cm")))
+
+    p_stacked <- ggplot(stratum_long, aes(x = year, y = carbon_stock, fill = interval)) +
+      geom_area(position = "stack") +
+      facet_wrap(~scenario, ncol = 1) +
+      labs(
+        title = sprintf("Carbon Stock by Depth: %s", stratum_name),
+        x = "Year",
+        y = "Carbon Stock (Mg C/ha)",
+        fill = "VM0033 Interval"
+      ) +
+      scale_fill_brewer(palette = "YlOrBr") +
+      theme_bw() +
+      theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 10),
+        legend.position = "bottom"
+      )
+
+    plot_file_stacked <- file.path("outputs/temporal_change/plots",
+                          sprintf("trajectory_stacked_%s.png", gsub(" ", "_", tolower(stratum_name))))
+    ggsave(plot_file_stacked, p_stacked, width = 8, height = 6, dpi = 300)
+    log_message(sprintf("  Saved plot: %s", basename(plot_file_stacked)))
   }
 
 } # End temporal change analysis

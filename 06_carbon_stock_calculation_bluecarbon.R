@@ -570,11 +570,44 @@ if (HAS_STRATUM_RASTER) {
       }
     }
 
-    # Save stratum statistics for this method
+    # Save stratum statistics for this method (long format)
     write.csv(stratum_stats,
               sprintf("outputs/carbon_stocks/carbon_stocks_by_stratum_%s.csv", method),
               row.names = FALSE)
-    log_message(sprintf("\nSaved %s stratum-level statistics", method))
+    log_message(sprintf("\nSaved %s stratum-level statistics (long format)", method))
+
+    # Create wide-format version for temporal analysis
+    # Each stratum is one row with columns for each VM0033 interval
+    stratum_stats_wide <- stratum_stats %>%
+      select(stratum, depth_interval, mean_stock_Mg_ha, se_stock_Mg_ha,
+             conservative_stock_Mg_ha, area_ha) %>%
+      pivot_wider(
+        id_cols = c(stratum, area_ha),
+        names_from = depth_interval,
+        values_from = c(mean_stock_Mg_ha, se_stock_Mg_ha, conservative_stock_Mg_ha),
+        names_sep = "_"
+      ) %>%
+      # Rename columns to match temporal analysis expectations
+      rename_with(
+        ~ gsub("mean_stock_Mg_ha_", "carbon_stock_", .x),
+        starts_with("mean_stock_Mg_ha_")
+      ) %>%
+      rename_with(
+        ~ gsub("se_stock_Mg_ha_", "carbon_stock_se_", .x),
+        starts_with("se_stock_Mg_ha_")
+      ) %>%
+      rename_with(
+        ~ gsub("conservative_stock_Mg_ha_", "carbon_stock_conservative_", .x),
+        starts_with("conservative_stock_Mg_ha_")
+      ) %>%
+      # Add method column
+      mutate(method = method, .before = 1)
+
+    # Save wide format for temporal analysis
+    write.csv(stratum_stats_wide,
+              sprintf("outputs/carbon_stocks/carbon_stocks_by_stratum_%s_wide.csv", method),
+              row.names = FALSE)
+    log_message(sprintf("Saved %s wide-format for temporal analysis", method))
   }
 
 } else {
