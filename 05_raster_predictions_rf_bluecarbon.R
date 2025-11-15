@@ -819,10 +819,12 @@ for (depth in STANDARD_DEPTHS) {
     tryCatch({
       # AOA identifies areas where predictions are reliable based on training data
       # Uses dissimilarity index (DI) to flag extrapolation
+      # Passing the RF model enables variable importance weighting for more accurate AOA
       aoa_result <- aoa(
         newdata = covariate_stack,  # Raster stack for prediction
         train = predictors,          # Training data (dataframe)
-        variables = covariate_names  # Variables to use
+        variables = covariate_names, # Variables to use
+        model = rf_model             # RF model for variable importance weighting
       )
 
       # Save AOA (binary mask: 1 = inside AOA, 0 = outside AOA)
