@@ -385,62 +385,107 @@ var uncertainty_strata = ee.Image(0)
 print('Uncertainty strata: 1=Low (CV<15%), 2=Medium (15-30%), 3=High (CV≥30%)');
 
 // ============================================================================
-// BLEND WITH SOTHE ET AL. 2022 FOR 50-100cm DEPTH (IF AVAILABLE)
+// BLEND WITH SOTHE ET AL. 2022 FOR TOTAL 0-100cm STOCK (IF AVAILABLE)
 // ============================================================================
-// STRATEGY: Use SoilGrids for all depths, but blend Sothe et al. BC Coast
-//           1m data with the deepest layer (50-100cm) for regional accuracy
+// STRATEGY: Blend total 0-100cm stock from SoilGrids with Sothe et al. 1m total
+//           Then apply scaling factor proportionally to all depth intervals
 
 if (useSothe && sothe_soil !== null) {
   print('═══════════════════════════════════════');
-  print('BLENDING STRATEGY FOR 50-100cm DEPTH (75cm midpoint)');
+  print('BLENDING STRATEGY FOR TOTAL 0-100cm CARBON STOCK');
   print('═══════════════════════════════════════');
   print('Combining SoilGrids (global) with Sothe et al. 2022 (BC Coast regional)');
-  print('Method: Precision-weighted average');
+  print('Method: Precision-weighted blending of 0-100cm totals, then proportional scaling');
 
-  // Sothe et al. provides soil carbon to 1m in kg/m²
-  // We blend this with our 50-100 cm layer for regional refinement
+  // Step 1: Calculate SoilGrids total 0-100cm stock
+  var soilgrids_total_0_100 = vm0033_stocks['0-15']
+    .add(vm0033_stocks['15-30'])
+    .add(vm0033_stocks['30-50'])
+    .add(vm0033_stocks['50-100'])
+    .rename('soilgrids_total_0_100cm');
 
+  // Calculate SoilGrids total SE using error propagation: SE_total = sqrt(SE1² + SE2² + SE3² + SE4²)
+  var soilgrids_total_se = vm0033_stocks_se['0-15'].pow(2)
+    .add(vm0033_stocks_se['15-30'].pow(2))
+    .add(vm0033_stocks_se['30-50'].pow(2))
+    .add(vm0033_stocks_se['50-100'].pow(2))
+    .sqrt()
+    .rename('soilgrids_total_se_0_100cm');
+
+  print('Step 1: Calculated SoilGrids total 0-100cm stock by summing all intervals');
+
+  // Step 2: Blend SoilGrids total with Sothe et al. total (both 0-100cm)
   if (sothe_soil_unc !== null) {
     // Precision-weighted average: w = 1/SE²
-    // Blended mean = (w_sg × mean_sg + w_sothe × mean_sothe) / (w_sg + w_sothe)
-    // Blended SE = sqrt(1 / (w_sg + w_sothe))
-
-    var weight_soilgrids = vm0033_stocks_se['50-100'].pow(-2);
+    var weight_soilgrids = soilgrids_total_se.pow(-2);
     var weight_sothe = sothe_soil_unc.pow(-2);
 
-    var blended_stock = vm0033_stocks['50-100'].multiply(weight_soilgrids)
+    var blended_total = soilgrids_total_0_100.multiply(weight_soilgrids)
       .add(sothe_soil.multiply(weight_sothe))
       .divide(weight_soilgrids.add(weight_sothe))
-      .rename('carbon_stock_50_100cm_blended');
+      .rename('blended_total_0_100cm');
 
-    // Calculate blended SE: 1/SE² = 1/SE_sg² + 1/SE_sothe²
-    var blended_se = weight_soilgrids.add(weight_sothe)
+    // Blended total SE
+    var blended_total_se = weight_soilgrids.add(weight_sothe)
       .pow(-0.5)
-      .rename('carbon_stock_se_50_100cm_blended');
+      .rename('blended_total_se_0_100cm');
 
-    // Replace the 50-100cm layer with blended version
-    vm0033_stocks['50-100'] = blended_stock;
-    vm0033_stocks_se['50-100'] = blended_se;
+    print('Step 2: Blended totals using precision-weighted average');
+    print('  Formula: Blended = (w_sg × Total_sg + w_sothe × Total_sothe) / (w_sg + w_sothe)');
 
-    print('✓ Created blended 50-100cm layer using precision-weighted average');
-    print('  SoilGrids weight + Sothe weight = combined precision');
-    print('  Expected uncertainty reduction compared to SoilGrids alone');
+    // Step 3: Calculate scaling factor
+    var scaling_factor = blended_total.divide(soilgrids_total_0_100);
+
+    print('Step 3: Calculated scaling factor = Blended_total / SoilGrids_total');
+
+    // Step 4: Apply scaling factor to ALL depth intervals proportionally
+    print('Step 4: Applying scaling factor to all depth intervals...');
+
+    var intervals = ['0-15', '15-30', '30-50', '50-100'];
+    intervals.forEach(function(interval) {
+      // Scale the mean
+      var scaled_mean = vm0033_stocks[interval].multiply(scaling_factor);
+      vm0033_stocks[interval] = scaled_mean;
+
+      // Scale the SE (uncertainty also scales proportionally)
+      var scaled_se = vm0033_stocks_se[interval].multiply(scaling_factor);
+      vm0033_stocks_se[interval] = scaled_se;
+
+      var midpoint = VM0033_INTERVALS[interval].midpoint;
+      print('  ✓ Scaled ' + midpoint + ' cm depth (interval ' + interval + ' cm)');
+    });
+
+    print('');
+    print('✓ All depth intervals adjusted using SoilGrids + Sothe et al. blending');
+    print('  Expected: Regional accuracy from Sothe et al. distributed across all depths');
+    print('  Expected: Depth pattern preserved from SoilGrids');
+    print('  Expected: Reduced uncertainty compared to SoilGrids alone');
+
   } else {
     // Simple average if uncertainty not available
-    print('⚠ Sothe uncertainty not available - using simple average');
-    var blended_simple = vm0033_stocks['50-100'].add(sothe_soil).divide(2)
-      .rename('carbon_stock_50_100cm_blended');
-    vm0033_stocks['50-100'] = blended_simple;
+    print('⚠ Sothe uncertainty not available - using simple average of totals');
 
-    print('✓ Created blended 50-100cm layer using simple average');
+    var blended_total = soilgrids_total_0_100.add(sothe_soil).divide(2);
+    var scaling_factor = blended_total.divide(soilgrids_total_0_100);
+
+    var intervals = ['0-15', '15-30', '30-50', '50-100'];
+    intervals.forEach(function(interval) {
+      vm0033_stocks[interval] = vm0033_stocks[interval].multiply(scaling_factor);
+      vm0033_stocks_se[interval] = vm0033_stocks_se[interval].multiply(scaling_factor);
+    });
+
+    print('✓ Applied simple average scaling to all depth intervals');
   }
 
   print('');
   print('FINAL PRIOR STRATEGY:');
-  print('  7.5 cm (0-15 cm): SoilGrids only');
-  print('  22.5 cm (15-30 cm): SoilGrids only');
-  print('  40 cm (30-50 cm): SoilGrids only');
-  print('  75 cm (50-100 cm): SoilGrids + Sothe et al. blended');
+  print('  • SoilGrids provides depth distribution pattern');
+  print('  • Sothe et al. provides regional total correction (0-100cm)');
+  print('  • All 4 depth intervals scaled proportionally by blended total');
+  print('  7.5 cm (0-15 cm): SoilGrids pattern × Regional scaling');
+  print('  22.5 cm (15-30 cm): SoilGrids pattern × Regional scaling');
+  print('  40 cm (30-50 cm): SoilGrids pattern × Regional scaling');
+  print('  75 cm (50-100 cm): SoilGrids pattern × Regional scaling');
   print('═══════════════════════════════════════');
 } else {
   print('Sothe et al. 2022 data not available - using SoilGrids only for all depths');
@@ -608,22 +653,29 @@ print('    - Used for: ALL depth intervals');
 if (useSothe) {
   print('');
   print('  • Sothe et al. 2022 BC Coast - Regional refinement');
-  print('    - Soil carbon to 1m: kg/m²');
-  print('    - Used for: Blended with 50-100cm depth only');
-  print('    - Blending method: Precision-weighted average');
+  print('    - Soil carbon to 1m (0-100cm total): kg/m²');
+  print('    - Used for: Blending with SoilGrids 0-100cm total');
+  print('    - Blending method: Precision-weighted average of totals');
+  print('    - Scaling: Applied proportionally to all 4 depth intervals');
 }
 print('');
 print('DEPTH INTERVAL CALCULATIONS FROM SOILGRIDS:');
 print('  • 0-15 cm (7.5 cm midpoint):');
-print('    = 0-5 cm (5 cm) + 5-15 cm (10 cm) [SoilGrids only]');
+print('    = 0-5 cm (5 cm) + 5-15 cm (10 cm)');
 print('  • 15-30 cm (22.5 cm midpoint):');
-print('    = 15-30 cm (15 cm) direct match [SoilGrids only]');
+print('    = 15-30 cm (15 cm) direct match');
 print('  • 30-50 cm (40 cm midpoint):');
-print('    = 20/30 × 30-60 cm interval [SoilGrids only]');
+print('    = 20/30 × 30-60 cm interval');
 print('  • 50-100 cm (75 cm midpoint):');
 print('    = 10/30 × 30-60 cm + 60-100 cm (40 cm)');
+print('');
 if (useSothe && sothe_soil !== null) {
-  print('    = BLENDED with Sothe et al. 1m total');
+  print('BLENDING APPLIED:');
+  print('  • Sum all 4 SoilGrids intervals = Total 0-100cm');
+  print('  • Blend: (SoilGrids total) + (Sothe et al. total) using precision weights');
+  print('  • Calculate scaling factor = Blended_total / SoilGrids_total');
+  print('  • Apply scaling factor to ALL 4 depth intervals proportionally');
+  print('  • Result: Regional accuracy + SoilGrids depth pattern preserved');
 }
 print('');
 print('EXPORTED FILES (12 total):');

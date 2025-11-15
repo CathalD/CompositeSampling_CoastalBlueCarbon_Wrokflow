@@ -79,21 +79,31 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 > The Bayesian workflow expects carbon stock priors to match the units used in Modules 03-06.
 
 **Data Sources and Strategy**:
-1. **SoilGrids 250m** (Poggio et al. 2021) - **Global baseline for all depths**
+1. **SoilGrids 250m** (Poggio et al. 2021) - **Global baseline for depth patterns**
    - Global soil organic carbon dataset at 250m resolution
    - Provides depth-specific layers (0-5, 5-15, 15-30, 30-60, 60-100 cm)
-   - Used as the primary source for all VM0033 depth intervals
+   - Used to calculate carbon stocks for all VM0033 depth intervals
+   - Provides the depth distribution pattern (how carbon varies with depth)
 
-2. **Sothe et al. 2022** - **BC Coast regional refinement (deepest layer only)**
+2. **Sothe et al. 2022** - **BC Coast regional refinement (total 0-100cm)**
    - Regional soil carbon dataset for British Columbia coast
-   - Provides total carbon to 1m depth (kg/m²) with uncertainty
-   - **Blended with SoilGrids for 50-100cm depth (75 cm midpoint) only**
-   - Blending method: Precision-weighted average (higher precision = more weight)
+   - Provides total carbon to 1m depth (0-100cm) in kg/m² with uncertainty
+   - **Blended with SoilGrids 0-100cm total (sum of all 4 intervals)**
+   - Blending method: Precision-weighted average of totals, then proportional scaling
+
+**How Blending Works**:
+1. Calculate 4 depth intervals from SoilGrids: 0-15, 15-30, 30-50, 50-100 cm
+2. Sum all 4 intervals → SoilGrids total 0-100cm
+3. Blend: (SoilGrids total) + (Sothe et al. total) using precision weights
+4. Calculate scaling factor = Blended_total / SoilGrids_original_total
+5. Apply scaling factor to **ALL 4 depth intervals** proportionally
+6. Result: Regional accuracy from Sothe + depth pattern from SoilGrids
 
 **Why This Strategy?**
-- SoilGrids provides consistent depth-specific estimates globally
-- Sothe et al. provides higher regional accuracy for BC Coast
-- Blending the deepest layer combines global consistency with regional accuracy
+- SoilGrids provides reliable depth distribution patterns globally
+- Sothe et al. provides higher regional accuracy for BC Coast total stocks
+- Blending totals and scaling preserves depth patterns while adding regional accuracy
+- All depths benefit from regional refinement, not just one layer
 - Precision-weighting ensures the most reliable data source has more influence
 
 ### Instructions:
@@ -129,13 +139,19 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 5. **Understand the Blending Process**:
 
    The script will:
-   - Calculate carbon stocks from SoilGrids for all 4 VM0033 depths
-   - For the 50-100cm depth (75 cm midpoint):
-     - Use precision-weighted average: `w = 1/SE²`
-     - Blended mean = `(w_SoilGrids × mean_SoilGrids + w_Sothe × mean_Sothe) / (w_SoilGrids + w_Sothe)`
-     - Blended SE = `sqrt(1 / (w_SoilGrids + w_Sothe))`
-     - Result: Lower uncertainty than either source alone
-   - For other depths (7.5, 22.5, 40 cm): Use SoilGrids only
+   - **Step 1**: Calculate carbon stocks from SoilGrids for all 4 VM0033 depth intervals
+     - 0-15cm (7.5cm midpoint), 15-30cm (22.5cm), 30-50cm (40cm), 50-100cm (75cm)
+   - **Step 2**: Sum all 4 SoilGrids intervals to get total 0-100cm stock
+     - Total_SG = 0-15cm + 15-30cm + 30-50cm + 50-100cm
+   - **Step 3**: Blend the two 0-100cm totals using precision-weighted average:
+     - `w_SG = 1/SE_SG²`, `w_Sothe = 1/SE_Sothe²`
+     - `Blended_total = (w_SG × Total_SG + w_Sothe × Total_Sothe) / (w_SG + w_Sothe)`
+     - `Blended_SE = sqrt(1 / (w_SG + w_Sothe))`
+   - **Step 4**: Calculate scaling factor
+     - `Scaling = Blended_total / Original_SG_total`
+   - **Step 5**: Apply scaling to ALL 4 depth intervals proportionally
+     - Each interval gets multiplied by the same scaling factor
+     - Preserves SoilGrids depth pattern, adds Sothe regional accuracy
 
 6. **Run Script**
    - Click "Run" button
@@ -152,16 +168,20 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 **Required Files for Bayesian Workflow** (8 files total):
 
 **Prior Mean Files** (4 files - carbon stocks in kg/m²):
-- `carbon_stock_prior_mean_7.5cm.tif` ← SoilGrids only
-- `carbon_stock_prior_mean_22.5cm.tif` ← SoilGrids only
-- `carbon_stock_prior_mean_40cm.tif` ← SoilGrids only
-- `carbon_stock_prior_mean_75cm.tif` ← **SoilGrids + Sothe et al. blended**
+- `carbon_stock_prior_mean_7.5cm.tif` ← SoilGrids pattern × Regional scaling
+- `carbon_stock_prior_mean_22.5cm.tif` ← SoilGrids pattern × Regional scaling
+- `carbon_stock_prior_mean_40cm.tif` ← SoilGrids pattern × Regional scaling
+- `carbon_stock_prior_mean_75cm.tif` ← SoilGrids pattern × Regional scaling
 
 **Prior Uncertainty Files** (4 files - carbon stocks in kg/m²):
-- `carbon_stock_prior_se_7.5cm.tif` ← SoilGrids only
-- `carbon_stock_prior_se_22.5cm.tif` ← SoilGrids only
-- `carbon_stock_prior_se_40cm.tif` ← SoilGrids only
-- `carbon_stock_prior_se_75cm.tif` ← **SoilGrids + Sothe et al. blended (reduced uncertainty)**
+- `carbon_stock_prior_se_7.5cm.tif` ← Scaled uncertainty
+- `carbon_stock_prior_se_22.5cm.tif` ← Scaled uncertainty
+- `carbon_stock_prior_se_40cm.tif` ← Scaled uncertainty
+- `carbon_stock_prior_se_75cm.tif` ← Scaled uncertainty
+
+> **Note**: When Sothe et al. data is available, ALL 4 depth intervals are adjusted by the same
+> regional scaling factor. The scaling factor is calculated by blending the 0-100cm totals from
+> SoilGrids and Sothe et al., then applied proportionally to preserve depth patterns.
 
 **Optional Files for Diagnostics**:
 - `carbon_stock_prior_cv_7.5cm.tif` - Coefficient of variation (%)
@@ -201,7 +221,7 @@ CompositeSampling_CoastalBlueCarbon_Wrokflow/
 
 **Purpose**: Process and align GEE-exported priors to study area
 
-**Important**: This module expects files already named `carbon_stock_prior_mean_*.tif` and `carbon_stock_prior_se_*.tif` from the GEE export script. The 75cm depth file contains the SoilGrids + Sothe et al. blended layer.
+**Important**: This module expects files already named `carbon_stock_prior_mean_*.tif` and `carbon_stock_prior_se_*.tif` from the GEE export script. If Sothe et al. data was available, ALL 4 depth files contain regionally-scaled values (not just the deepest layer).
 
 ### Prerequisites:
 - ✓ GEE exports downloaded to `data_prior/gee_exports/`
@@ -233,14 +253,14 @@ data_prior/gee_exports/
 ### Outputs:
 ```
 data_prior/
-├── carbon_stock_prior_mean_7.5cm.tif     ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_mean_22.5cm.tif    ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_mean_40cm.tif      ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_mean_75cm.tif      ← SoilGrids + Sothe blended (kg/m²)
-├── carbon_stock_prior_se_7.5cm.tif       ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_se_22.5cm.tif      ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_se_40cm.tif        ← SoilGrids only (kg/m²)
-├── carbon_stock_prior_se_75cm.tif        ← SoilGrids + Sothe blended (reduced uncertainty)
+├── carbon_stock_prior_mean_7.5cm.tif     ← Regionally-scaled if Sothe available (kg/m²)
+├── carbon_stock_prior_mean_22.5cm.tif    ← Regionally-scaled if Sothe available (kg/m²)
+├── carbon_stock_prior_mean_40cm.tif      ← Regionally-scaled if Sothe available (kg/m²)
+├── carbon_stock_prior_mean_75cm.tif      ← Regionally-scaled if Sothe available (kg/m²)
+├── carbon_stock_prior_se_7.5cm.tif       ← Scaled uncertainty (kg/m²)
+├── carbon_stock_prior_se_22.5cm.tif      ← Scaled uncertainty (kg/m²)
+├── carbon_stock_prior_se_40cm.tif        ← Scaled uncertainty (kg/m²)
+├── carbon_stock_prior_se_75cm.tif        ← Scaled uncertainty (kg/m²)
 ├── uncertainty_strata.tif       ← Uncertainty strata (1=low, 2=med, 3=high)
 ├── prior_metadata.csv           ← Source info and statistics
 └── prior_depth_summary.csv      ← Depth-specific summary statistics
@@ -599,8 +619,9 @@ USE_BAYESIAN <- TRUE
 
 - **Sothe, C., et al. (2022)**. Large soil carbon storage in terrestrial ecosystems of Canada. *Global Biogeochemical Cycles*, 36(4), e2021GB007213.
   - Regional dataset for Canada at 250m resolution
-  - Total soil carbon to 1m depth with uncertainty estimates
-  - Blended with SoilGrids for 50-100cm depth to improve regional accuracy
+  - Total soil carbon to 1m depth (0-100cm) with uncertainty estimates
+  - Blended with SoilGrids 0-100cm total using precision-weighted average
+  - Scaling factor applied proportionally to all depth intervals
   - Access: Google Earth Engine (`projects/northstarlabs/assets/`)
 
 **Methodology**:
