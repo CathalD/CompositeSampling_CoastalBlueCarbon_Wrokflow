@@ -358,9 +358,9 @@ cat("========================================\n\n")
 cat(sprintf("Processed depths: %s\n",
             paste(processed_files$depth_cm, collapse = ", ")))
 cat(sprintf("Total area: %.1f ha\n", max(processed_files$area_ha, na.rm = TRUE)))
-cat(sprintf("Mean SOC (all depths): %.1f ± %.1f g/kg\n",
-            mean(processed_files$mean_soc_gkg),
-            mean(processed_files$mean_se_gkg)))
+cat(sprintf("Mean carbon stock (all depths): %.1f ± %.1f kg/m²\n",
+            mean(processed_files$mean_carbon_stock_kgm2),
+            mean(processed_files$mean_se_kgm2)))
 cat(sprintf("Mean CV: %.1f%%\n", mean(processed_files$cv_pct)))
 cat("\n")
 

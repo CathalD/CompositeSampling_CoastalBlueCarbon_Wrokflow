@@ -75,6 +75,9 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 
 ### File: `GEE_EXPORT_BAYESIAN_PRIORS.js`
 
+> **IMPORTANT**: The GEE script must export **carbon stocks (kg/m²)**, not SOC (g/kg).
+> The Bayesian workflow now expects carbon stock priors to match the units used in Modules 03-06.
+
 **Data Sources**:
 1. **SoilGrids 250m** - Global soil organic carbon (Poggio et al. 2021)
 2. **Sothe et al. 2022** - BC Coast forest biomass and soil carbon
@@ -116,17 +119,17 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 
 ### Expected GEE Exports:
 
-**Prior Mean Files** (8 files):
-- `soc_prior_mean_7.5cm.tif`
-- `soc_prior_mean_22.5cm.tif`
-- `soc_prior_mean_40cm.tif`
-- `soc_prior_mean_75cm.tif`
+**Prior Mean Files** (4 files - carbon stocks in kg/m²):
+- `carbon_stock_prior_mean_7.5cm.tif`
+- `carbon_stock_prior_mean_22.5cm.tif`
+- `carbon_stock_prior_mean_40cm.tif`
+- `carbon_stock_prior_mean_75cm.tif`
 
-**Prior Uncertainty Files** (8 files):
-- `soc_prior_se_7.5cm.tif`
-- `soc_prior_se_22.5cm.tif`
-- `soc_prior_se_40cm.tif`
-- `soc_prior_se_75cm.tif`
+**Prior Uncertainty Files** (4 files - carbon stocks in kg/m²):
+- `carbon_stock_prior_se_7.5cm.tif`
+- `carbon_stock_prior_se_22.5cm.tif`
+- `carbon_stock_prior_se_40cm.tif`
+- `carbon_stock_prior_se_75cm.tif`
 
 **Optional**:
 - `uncertainty_strata.tif` (for stratified sampling)
@@ -143,14 +146,14 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 CompositeSampling_CoastalBlueCarbon_Wrokflow/
 ├── data_prior/
 │   └── gee_exports/
-│       ├── soc_prior_mean_7.5cm.tif
-│       ├── soc_prior_mean_22.5cm.tif
-│       ├── soc_prior_mean_40cm.tif
-│       ├── soc_prior_mean_75cm.tif
-│       ├── soc_prior_se_7.5cm.tif
-│       ├── soc_prior_se_22.5cm.tif
-│       ├── soc_prior_se_40cm.tif
-│       ├── soc_prior_se_75cm.tif
+│       ├── carbon_stock_prior_mean_7.5cm.tif
+│       ├── carbon_stock_prior_mean_22.5cm.tif
+│       ├── carbon_stock_prior_mean_40cm.tif
+│       ├── carbon_stock_prior_mean_75cm.tif
+│       ├── carbon_stock_prior_se_7.5cm.tif
+│       ├── carbon_stock_prior_se_22.5cm.tif
+│       ├── carbon_stock_prior_se_40cm.tif
+│       ├── carbon_stock_prior_se_75cm.tif
 │       └── uncertainty_strata.tif (optional)
 ```
 
@@ -183,22 +186,22 @@ source("00c_bayesian_prior_setup_bluecarbon.R")
 ### Inputs:
 ```
 data_prior/gee_exports/
-├── soc_prior_mean_*.tif (from GEE)
-├── soc_prior_se_*.tif (from GEE)
+├── carbon_stock_prior_mean_*.tif (from GEE - carbon stocks kg/m²)
+├── carbon_stock_prior_se_*.tif (from GEE - carbon stocks kg/m²)
 └── uncertainty_strata.tif (optional, from GEE)
 ```
 
 ### Outputs:
 ```
 data_prior/
-├── soc_prior_mean_7.5cm.tif     ← Processed prior mean (g/kg)
-├── soc_prior_mean_22.5cm.tif
-├── soc_prior_mean_40cm.tif
-├── soc_prior_mean_75cm.tif
-├── soc_prior_se_7.5cm.tif       ← Processed prior SE (g/kg)
-├── soc_prior_se_22.5cm.tif
-├── soc_prior_se_40cm.tif
-├── soc_prior_se_75cm.tif
+├── carbon_stock_prior_mean_7.5cm.tif     ← Processed prior mean (kg/m²)
+├── carbon_stock_prior_mean_22.5cm.tif
+├── carbon_stock_prior_mean_40cm.tif
+├── carbon_stock_prior_mean_75cm.tif
+├── carbon_stock_prior_se_7.5cm.tif       ← Processed prior SE (kg/m²)
+├── carbon_stock_prior_se_22.5cm.tif
+├── carbon_stock_prior_se_40cm.tif
+├── carbon_stock_prior_se_75cm.tif
 ├── uncertainty_strata.tif       ← Uncertainty strata (1=low, 2=med, 3=high)
 └── prior_metadata.csv           ← Source info and statistics
 ```
@@ -211,18 +214,18 @@ Bayesian workflow enabled ✓
 
 Checking for GEE exported files...
 Found 4 prior mean files:
-  - soc_prior_mean_7.5cm.tif
-  - soc_prior_mean_22.5cm.tif
-  - soc_prior_mean_40cm.tif
-  - soc_prior_mean_75cm.tif
+  - carbon_stock_prior_mean_7.5cm.tif
+  - carbon_stock_prior_mean_22.5cm.tif
+  - carbon_stock_prior_mean_40cm.tif
+  - carbon_stock_prior_mean_75cm.tif
 
 Processing prior maps for VM0033 standard depths...
   Processing depth: 7.5 cm
-    Loaded mean: soc_prior_mean_7.5cm.tif
-    Loaded SE: soc_prior_se_7.5cm.tif
+    Loaded mean: carbon_stock_prior_mean_7.5cm.tif
+    Loaded SE: carbon_stock_prior_se_7.5cm.tif
     Reprojected to EPSG:3005
     Clipped to study area
-    Saved: data_prior/soc_prior_mean_7.5cm.tif
+    Saved: data_prior/carbon_stock_prior_mean_7.5cm.tif
 
 Prior processing complete!
 Created metadata file: data_prior/prior_metadata.csv
@@ -269,8 +272,8 @@ source("01c_bayesian_sampling_design_bluecarbon.R")
 ### Inputs:
 ```
 data_prior/
-├── soc_prior_mean_7.5cm.tif (from Module 00C)
-├── soc_prior_se_7.5cm.tif (from Module 00C)
+├── carbon_stock_prior_mean_7.5cm.tif (from Module 00C)
+├── carbon_stock_prior_se_7.5cm.tif (from Module 00C)
 └── uncertainty_strata.tif (optional)
 ```
 
@@ -356,8 +359,8 @@ source("06c_bayesian_posterior_estimation_bluecarbon.R")
 ### Inputs:
 ```
 data_prior/
-├── soc_prior_mean_*.tif (from Module 00C)
-└── soc_prior_se_*.tif (from Module 00C)
+├── carbon_stock_prior_mean_*.tif (from Module 00C)
+└── carbon_stock_prior_se_*.tif (from Module 00C)
 
 outputs/predictions/rf/
 ├── carbon_stock_rf_*cm.tif (from Module 05)
@@ -373,15 +376,15 @@ outputs/predictions/kriging/
 ### Outputs:
 ```
 outputs/predictions/posterior/
-├── soc_posterior_mean_7.5cm.tif        ← Posterior mean (kg/m²)
-├── soc_posterior_mean_22.5cm.tif
-├── soc_posterior_mean_40cm.tif
-├── soc_posterior_mean_75cm.tif
-├── soc_posterior_se_7.5cm.tif          ← Posterior SE (kg/m²)
-├── soc_posterior_se_22.5cm.tif
-├── soc_posterior_se_40cm.tif
-├── soc_posterior_se_75cm.tif
-└── soc_posterior_conservative_*.tif    ← Conservative (lower 95% CI)
+├── carbon_stock_posterior_mean_7.5cm.tif        ← Posterior mean (kg/m²)
+├── carbon_stock_posterior_mean_22.5cm.tif
+├── carbon_stock_posterior_mean_40cm.tif
+├── carbon_stock_posterior_mean_75cm.tif
+├── carbon_stock_posterior_se_7.5cm.tif          ← Posterior SE (kg/m²)
+├── carbon_stock_posterior_se_22.5cm.tif
+├── carbon_stock_posterior_se_40cm.tif
+├── carbon_stock_posterior_se_75cm.tif
+└── carbon_stock_posterior_conservative_*.tif    ← Conservative (lower 95% CI)
 
 diagnostics/bayesian/
 ├── information_gain_7.5cm.tif          ← Uncertainty reduction map
@@ -460,14 +463,14 @@ After Module 06C, use posterior maps in place of RF/Kriging predictions:
 ### Required Files Checklist:
 
 **From Google Earth Engine**:
-- [ ] `soc_prior_mean_7.5cm.tif`
-- [ ] `soc_prior_mean_22.5cm.tif`
-- [ ] `soc_prior_mean_40cm.tif`
-- [ ] `soc_prior_mean_75cm.tif`
-- [ ] `soc_prior_se_7.5cm.tif`
-- [ ] `soc_prior_se_22.5cm.tif`
-- [ ] `soc_prior_se_40cm.tif`
-- [ ] `soc_prior_se_75cm.tif`
+- [ ] `carbon_stock_prior_mean_7.5cm.tif`
+- [ ] `carbon_stock_prior_mean_22.5cm.tif`
+- [ ] `carbon_stock_prior_mean_40cm.tif`
+- [ ] `carbon_stock_prior_mean_75cm.tif`
+- [ ] `carbon_stock_prior_se_7.5cm.tif`
+- [ ] `carbon_stock_prior_se_22.5cm.tif`
+- [ ] `carbon_stock_prior_se_40cm.tif`
+- [ ] `carbon_stock_prior_se_75cm.tif`
 - [ ] `uncertainty_strata.tif` (optional)
 
 **From Standard Workflow**:
@@ -537,10 +540,11 @@ USE_BAYESIAN <- TRUE
 
 ### Issue: "Posterior estimates seem wrong"
 **Check**:
-1. Prior units (should be g/kg for SOC or kg/m² for carbon stocks)
-2. Field prediction units match prior units
+1. Prior units (should be kg/m² for carbon stocks)
+2. Field prediction units match prior units (kg/m²)
 3. Sample density calculation working correctly
 4. Weighting method appropriate (`BAYESIAN_WEIGHT_METHOD`)
+5. GEE export script updated to export carbon stocks (not SOC)
 
 ---
 
