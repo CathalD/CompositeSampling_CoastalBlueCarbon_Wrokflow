@@ -19,8 +19,8 @@
 #   σ²_posterior = 1 / (τ_prior + τ_field)
 #
 # INPUTS:
-#   - data_prior/soc_prior_mean_*.tif (from Module 00C - NOTE: SOC units g/kg)
-#   - data_prior/soc_prior_se_*.tif (from Module 00C - NOTE: SOC units g/kg)
+#   - data_prior/carbon_stock_prior_mean_*.tif (from Module 00C - carbon stocks kg/m²)
+#   - data_prior/carbon_stock_prior_se_*.tif (from Module 00C - carbon stocks kg/m²)
 #   - outputs/predictions/rf/carbon_stock_rf_*.tif (from Module 05 - carbon stocks kg/m²)
 #   - outputs/predictions/rf/se_combined_*.tif (from Module 05 - uncertainty kg/m²)
 #   OR
@@ -36,17 +36,8 @@
 #   - diagnostics/bayesian/uncertainty_reduction.csv
 #   - diagnostics/bayesian/prior_likelihood_posterior_comparison.png
 #
-# IMPORTANT UNIT COMPATIBILITY NOTE:
-#   The current priors from Module 00C are in SOC units (g/kg), but the updated
-#   workflow (Modules 04/05) now produces carbon stocks in kg/m². For proper
-#   Bayesian updating, BOTH priors and likelihood must be in the same units.
-#
-#   OPTIONS:
-#   1. Update Module 00C to export carbon stock priors (requires BD from GEE)
-#   2. Convert SOC priors to carbon stocks using bulk density rasters
-#   3. Revert Modules 04/05 to predict SOC instead of carbon stocks
-#
-#   This module currently assumes compatible units - verify before running!
+# NOTE: All units are carbon stocks (kg/m²) for consistency with the updated workflow.
+#       Prior and likelihood must both be in kg/m² for proper Bayesian updating.
 #
 # ============================================================================
 
@@ -167,7 +158,7 @@ if (use_rf && use_kriging) {
 # LOAD PRIORS
 # ============================================================================
 
-log_message("\nLoading Bayesian priors...")
+log_message("\nLoading Bayesian priors (carbon stocks in kg/m²)...")
 
 if (!dir.exists(BAYESIAN_PRIOR_DIR)) {
   stop(sprintf("Prior directory not found: %s\n", BAYESIAN_PRIOR_DIR),
@@ -180,22 +171,26 @@ vm0033_depths <- c(7.5, 22.5, 40, 75)
 priors <- list()
 
 for (depth in vm0033_depths) {
-  prior_mean_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("soc_prior_mean_%.1fcm.tif", depth))
-  prior_se_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("soc_prior_se_%.1fcm.tif", depth))
+  # Updated to carbon stock prior files (kg/m²)
+  prior_mean_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("carbon_stock_prior_mean_%.1fcm.tif", depth))
+  prior_se_file <- file.path(BAYESIAN_PRIOR_DIR, sprintf("carbon_stock_prior_se_%.1fcm.tif", depth))
 
   if (file.exists(prior_mean_file) && file.exists(prior_se_file)) {
     priors[[as.character(depth)]] <- list(
       mean = rast(prior_mean_file),
       se = rast(prior_se_file)
     )
-    log_message(sprintf("  Loaded prior for %.1f cm", depth))
+    log_message(sprintf("  Loaded carbon stock prior for %.1f cm", depth))
   } else {
-    log_message(sprintf("  Prior not found for %.1f cm - skipping", depth), "WARNING")
+    log_message(sprintf("  Carbon stock prior not found for %.1f cm - skipping", depth), "WARNING")
+    log_message(sprintf("    Expected: %s", basename(prior_mean_file)), "WARNING")
   }
 }
 
 if (length(priors) == 0) {
-  stop("No prior maps loaded. Please run Module 00C first.")
+  stop("No carbon stock prior maps loaded.\n",
+       "Please run Module 00C first to process carbon stock priors.\n",
+       "Expected files: data_prior/carbon_stock_prior_mean_*.tif")
 }
 
 # ============================================================================

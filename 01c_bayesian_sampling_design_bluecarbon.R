@@ -7,8 +7,8 @@
 #   - Run Module 00C first to process Bayesian priors
 #
 # INPUTS:
-#   - data_prior/soc_prior_mean_*.tif (from Module 00C)
-#   - data_prior/soc_prior_se_*.tif (from Module 00C)
+#   - data_prior/carbon_stock_prior_mean_*.tif (from Module 00C - carbon stocks kg/m²)
+#   - data_prior/carbon_stock_prior_se_*.tif (from Module 00C - carbon stocks kg/m²)
 #   - data_prior/uncertainty_strata.tif (from Module 00C, or will create)
 #   - blue_carbon_config.R (configuration)
 #
@@ -71,33 +71,35 @@ log_message("Neyman allocation enabled ✓")
 # LOAD BAYESIAN PRIORS
 # ============================================================================
 
-log_message("\nLoading Bayesian priors...")
+log_message("\nLoading Bayesian carbon stock priors...")
 
 if (!dir.exists(BAYESIAN_PRIOR_DIR)) {
   stop(sprintf("Prior directory not found: %s\n", BAYESIAN_PRIOR_DIR),
        "Please run Module 00C first to process Bayesian priors.")
 }
 
-# Check for prior files
+# Check for carbon stock prior files (kg/m²)
 prior_mean_files <- list.files(BAYESIAN_PRIOR_DIR,
-                               pattern = "soc_prior_mean.*\\.tif$",
+                               pattern = "carbon_stock_prior_mean.*\\.tif$",
                                full.names = TRUE)
 
 prior_se_files <- list.files(BAYESIAN_PRIOR_DIR,
-                             pattern = "soc_prior_se.*\\.tif$",
+                             pattern = "carbon_stock_prior_se.*\\.tif$",
                              full.names = TRUE)
 
 if (length(prior_mean_files) == 0) {
-  stop("No prior mean files found. Please run Module 00C first.")
+  stop("No carbon stock prior mean files found.\n",
+       "Please run Module 00C first to process carbon stock priors.\n",
+       "Expected: data_prior/carbon_stock_prior_mean_*.tif")
 }
 
-log_message(sprintf("Found %d prior depth layers", length(prior_mean_files)))
+log_message(sprintf("Found %d carbon stock prior depth layers", length(prior_mean_files)))
 
 # Load surface layer (7.5cm) for sampling design
-surface_mean <- rast(file.path(BAYESIAN_PRIOR_DIR, "soc_prior_mean_7.5cm.tif"))
-surface_se <- rast(file.path(BAYESIAN_PRIOR_DIR, "soc_prior_se_7.5cm.tif"))
+surface_mean <- rast(file.path(BAYESIAN_PRIOR_DIR, "carbon_stock_prior_mean_7.5cm.tif"))
+surface_se <- rast(file.path(BAYESIAN_PRIOR_DIR, "carbon_stock_prior_se_7.5cm.tif"))
 
-log_message("Loaded surface layer (7.5cm) for sampling design")
+log_message("Loaded carbon stock surface layer (7.5cm) for sampling design")
 
 # Calculate coefficient of variation (CV)
 cv_raster <- (surface_se / surface_mean) * 100

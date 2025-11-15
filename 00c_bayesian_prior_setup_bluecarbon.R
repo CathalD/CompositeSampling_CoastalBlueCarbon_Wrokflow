@@ -9,16 +9,19 @@
 #   3. Place files in data_prior/gee_exports/ directory
 #
 # INPUTS:
-#   - data_prior/gee_exports/soc_prior_mean_*cm.tif (from GEE)
-#   - data_prior/gee_exports/soc_prior_se_*cm.tif (from GEE)
-#   - data_prior/gee_exports/uncertainty_strata.tif (from GEE)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_*cm.tif (from GEE - carbon stocks kg/m²)
+#   - data_prior/gee_exports/carbon_stock_prior_se_*cm.tif (from GEE - carbon stocks kg/m²)
+#   - data_prior/gee_exports/uncertainty_strata.tif (from GEE - optional)
 #   - blue_carbon_config.R (configuration)
 #
 # OUTPUTS:
-#   - data_prior/soc_prior_mean_*cm.tif (processed and aligned)
-#   - data_prior/soc_prior_se_*cm.tif (processed and aligned)
+#   - data_prior/carbon_stock_prior_mean_*cm.tif (processed and aligned - kg/m²)
+#   - data_prior/carbon_stock_prior_se_*cm.tif (processed and aligned - kg/m²)
 #   - data_prior/uncertainty_strata.tif (for Neyman sampling)
 #   - data_prior/prior_metadata.csv (source information)
+#
+# NOTE: This module now processes carbon stock priors (kg/m²) instead of SOC (g/kg)
+#       for consistency with the updated workflow (Modules 03-05).
 #
 # ============================================================================
 
@@ -75,17 +78,18 @@ if (!dir.exists(gee_exports_dir)) {
        "5. Re-run this module")
 }
 
-# Find all exported prior files
-prior_files <- list.files(gee_exports_dir, pattern = "soc_prior_mean.*\\.tif$",
+# Find all exported carbon stock prior files (kg/m²)
+prior_files <- list.files(gee_exports_dir, pattern = "carbon_stock_prior_mean.*\\.tif$",
                           full.names = TRUE)
 
 if (length(prior_files) == 0) {
-  stop(sprintf("No prior mean files found in %s\n", gee_exports_dir),
-       "Expected files like: soc_prior_mean_7_5cm.tif, soc_prior_mean_22_5cm.tif, etc.\n",
-       "Please run GEE export script and download files first.")
+  stop(sprintf("No carbon stock prior mean files found in %s\n", gee_exports_dir),
+       "Expected files: carbon_stock_prior_mean_7_5cm.tif, carbon_stock_prior_mean_22_5cm.tif, etc.\n",
+       "Please run updated GEE export script (GEE_EXPORT_BAYESIAN_PRIORS.js) and download files first.\n",
+       "NOTE: GEE script must export carbon stocks (kg/m²), not SOC (g/kg).")
 }
 
-log_message(sprintf("Found %d prior mean files:", length(prior_files)))
+log_message(sprintf("Found %d carbon stock prior mean files:", length(prior_files)))
 for (f in prior_files) {
   log_message(sprintf("  - %s", basename(f)))
 }
@@ -135,18 +139,18 @@ for (depth in vm0033_depths) {
 
   log_message(sprintf("\n  Processing depth: %.1f cm", depth))
 
-  # === MEAN LAYER ===
+  # === MEAN LAYER (carbon stocks kg/m²) ===
   mean_file <- file.path(gee_exports_dir,
-                         sprintf("soc_prior_mean_%scm.tif", depth_str))
+                         sprintf("carbon_stock_prior_mean_%scm.tif", depth_str))
 
   if (!file.exists(mean_file)) {
-    log_message(sprintf("    Mean file not found: %s", basename(mean_file)), "WARNING")
+    log_message(sprintf("    Carbon stock prior mean file not found: %s", basename(mean_file)), "WARNING")
     next
   }
 
   # Load raster
   mean_raster <- rast(mean_file)
-  log_message(sprintf("    Loaded mean: %s", basename(mean_file)))
+  log_message(sprintf("    Loaded carbon stock mean: %s", basename(mean_file)))
 
   # Reproject to PROCESSING_CRS if needed
   if (crs(mean_raster, describe = TRUE)$code != sprintf("EPSG:%d", PROCESSING_CRS)) {
@@ -176,9 +180,9 @@ for (depth in vm0033_depths) {
     mean_raster <- resample(mean_raster, template, method = "bilinear")
   }
 
-  # === SE LAYER ===
+  # === SE LAYER (carbon stocks kg/m²) ===
   se_file <- file.path(gee_exports_dir,
-                       sprintf("soc_prior_se_%scm.tif", depth_str))
+                       sprintf("carbon_stock_prior_se_%scm.tif", depth_str))
 
   if (file.exists(se_file)) {
     se_raster <- rast(se_file)
@@ -202,17 +206,17 @@ for (depth in vm0033_depths) {
     # Apply uncertainty inflation factor (conservative adjustment)
     se_raster <- se_raster * PRIOR_UNCERTAINTY_INFLATION
 
-    log_message(sprintf("    Loaded SE (inflated by %.1fx)", PRIOR_UNCERTAINTY_INFLATION))
+    log_message(sprintf("    Loaded carbon stock SE (inflated by %.1fx)", PRIOR_UNCERTAINTY_INFLATION))
   } else {
-    log_message("    SE file not found - using 20% of mean as default SE", "WARNING")
+    log_message("    Carbon stock SE file not found - using 20% of mean as default SE", "WARNING")
     se_raster <- mean_raster * 0.20
   }
 
-  # === SAVE PROCESSED RASTERS ===
+  # === SAVE PROCESSED RASTERS (carbon stocks kg/m²) ===
   mean_out <- file.path(BAYESIAN_PRIOR_DIR,
-                        sprintf("soc_prior_mean_%.1fcm.tif", depth))
+                        sprintf("carbon_stock_prior_mean_%.1fcm.tif", depth))
   se_out <- file.path(BAYESIAN_PRIOR_DIR,
-                      sprintf("soc_prior_se_%.1fcm.tif", depth))
+                      sprintf("carbon_stock_prior_se_%.1fcm.tif", depth))
 
   writeRaster(mean_raster, mean_out, overwrite = TRUE)
   writeRaster(se_raster, se_out, overwrite = TRUE)
@@ -232,16 +236,16 @@ for (depth in vm0033_depths) {
       depth_cm = depth,
       mean_file = basename(mean_out),
       se_file = basename(se_out),
-      mean_soc_gkg = mean(mean_vals, na.rm = TRUE),
-      sd_soc_gkg = sd(mean_vals, na.rm = TRUE),
-      mean_se_gkg = mean(se_vals, na.rm = TRUE),
+      mean_carbon_stock_kgm2 = mean(mean_vals, na.rm = TRUE),
+      sd_carbon_stock_kgm2 = sd(mean_vals, na.rm = TRUE),
+      mean_se_kgm2 = mean(se_vals, na.rm = TRUE),
       cv_pct = 100 * mean(se_vals, na.rm = TRUE) / mean(mean_vals, na.rm = TRUE),
       n_pixels = length(mean_vals),
       area_ha = length(mean_vals) * (PREDICTION_RESOLUTION^2) / 10000,
-      source = "SoilGrids_250m"
+      source = "GEE_Bayesian_Priors"
     ))
 
-    log_message(sprintf("    Stats: Mean=%.1f g/kg, SE=%.1f g/kg, CV=%.1f%%",
+    log_message(sprintf("    Stats: Mean=%.2f kg/m², SE=%.2f kg/m², CV=%.1f%%",
                        mean(mean_vals), mean(se_vals),
                        100 * mean(se_vals) / mean(mean_vals)))
   }
