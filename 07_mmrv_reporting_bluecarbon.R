@@ -9,7 +9,7 @@
 #   - outputs/carbon_stocks/carbon_stocks_method_comparison.csv (from Module 06)
 #   - outputs/predictions/kriging/carbon_stock_*.tif (from Module 04 - carbon stocks in kg/m²)
 #   - outputs/predictions/rf/carbon_stock_rf_*.tif (from Module 05 - carbon stocks in kg/m²)
-#   - outputs/predictions/rf/aoa_*.tif (if available - Area of Applicability)
+#   - outputs/predictions/rf/aoa_*.tif (if available - Area of Applicability with variable importance weighting)
 #   - diagnostics/crossvalidation/*.csv (model performance metrics)
 #   - data_processed/cores_harmonized_bluecarbon.rds (from Module 03 - harmonized SOC, BD, carbon stocks)
 # OUTPUTS:
@@ -433,25 +433,26 @@ aoa_files <- list.files("outputs/predictions/rf", pattern = "aoa_.*\\.tif$",
                         full.names = TRUE)
 
 if (length(aoa_files) > 0) {
-  log_message("Processing Area of Applicability...")
-  
+  log_message("Processing Area of Applicability (with variable importance weighting)...")
+
   for (aoa_file in aoa_files) {
     depth <- as.numeric(gsub(".*aoa_(\\d+)cm.*", "\\1", basename(aoa_file)))
-    
+
     aoa_raster <- rast(aoa_file)
-    
+
     # Count pixels inside/outside AOA
+    # AOA calculated using variable importance weighting from RF model
     aoa_vals <- values(aoa_raster, mat = FALSE)
     total_pixels <- length(aoa_vals[!is.na(aoa_vals)])
     outside_aoa <- sum(aoa_vals == 0, na.rm = TRUE)
     pct_outside <- 100 * outside_aoa / total_pixels
-    
+
     flagged_areas <- rbind(flagged_areas, data.frame(
       Flag_Type = "Outside AOA",
       Depth_cm = depth,
       N_Pixels = outside_aoa,
       Percent = pct_outside,
-      Recommendation = ifelse(pct_outside > 10, 
+      Recommendation = ifelse(pct_outside > 10,
                                "HIGH - Review predictions in this area",
                                "LOW - Acceptable extrapolation")
     ))
@@ -616,9 +617,12 @@ metadata_content <- paste0(
   "- se_combined_*_*cm.tif: Standard error rasters (kg/m²)\n",
   "\nQuality Assurance:\n",
   "- aoa_*cm.tif: Area of Applicability (1 = inside, 0 = outside)\n",
+  "               Uses variable importance weighting from RF model for accurate extrapolation detection\n",
   "- di_*cm.tif: Dissimilarity Index (higher = more extrapolation)\n",
+  "              Weighted by covariate importance to model predictions\n",
   "\nNote: Carbon stocks calculated from harmonized SOC and bulk density (Module 03)\n",
   "      Workflow now predicts carbon stocks directly instead of SOC concentrations\n",
+  "      AOA uses variable importance to identify areas where predictions may be unreliable\n",
   "\nFor verification questions, see vm0033_verification_package.html\n"
 )
 
@@ -754,8 +758,9 @@ This package includes conservative estimates (lower 95%% confidence bound) as re
 <p>Files include:</p>
 <ul>
 <li>Carbon stock maps (mean, SE, conservative estimates)</li>
-<li>SOC prediction rasters by depth</li>
-<li>Area of Applicability (AOA) masks</li>
+<li>Carbon stock prediction rasters by depth (kg/m²)</li>
+<li>Area of Applicability (AOA) masks with variable importance weighting</li>
+<li>Dissimilarity Index (DI) rasters for extrapolation assessment</li>
 <li>README with file descriptions</li>
 </ul>
 
