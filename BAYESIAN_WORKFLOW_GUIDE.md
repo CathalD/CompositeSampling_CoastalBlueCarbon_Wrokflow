@@ -75,12 +75,26 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
 
 ### File: `GEE_EXPORT_BAYESIAN_PRIORS.js`
 
-> **IMPORTANT**: The GEE script must export **carbon stocks (kg/m²)**, not SOC (g/kg).
-> The Bayesian workflow now expects carbon stock priors to match the units used in Modules 03-06.
+> **IMPORTANT**: The GEE script exports **carbon stocks (kg/m²)**, not SOC (g/kg).
+> The Bayesian workflow expects carbon stock priors to match the units used in Modules 03-06.
 
-**Data Sources**:
-1. **SoilGrids 250m** - Global soil organic carbon (Poggio et al. 2021)
-2. **Sothe et al. 2022** - BC Coast forest biomass and soil carbon
+**Data Sources and Strategy**:
+1. **SoilGrids 250m** (Poggio et al. 2021) - **Global baseline for all depths**
+   - Global soil organic carbon dataset at 250m resolution
+   - Provides depth-specific layers (0-5, 5-15, 15-30, 30-60, 60-100 cm)
+   - Used as the primary source for all VM0033 depth intervals
+
+2. **Sothe et al. 2022** - **BC Coast regional refinement (deepest layer only)**
+   - Regional soil carbon dataset for British Columbia coast
+   - Provides total carbon to 1m depth (kg/m²) with uncertainty
+   - **Blended with SoilGrids for 50-100cm depth (75 cm midpoint) only**
+   - Blending method: Precision-weighted average (higher precision = more weight)
+
+**Why This Strategy?**
+- SoilGrids provides consistent depth-specific estimates globally
+- Sothe et al. provides higher regional accuracy for BC Coast
+- Blending the deepest layer combines global consistency with regional accuracy
+- Precision-weighting ensures the most reliable data source has more influence
 
 ### Instructions:
 
@@ -102,37 +116,59 @@ PRIOR_UNCERTAINTY_INFLATION <- 1.2  # Multiply prior SE by 1.2
    var EXPORT_FOLDER = 'BlueCarbon_Priors';  // Google Drive folder
    ```
 
-4. **Update Asset Paths** (if needed)
+4. **Update Asset Paths** for Sothe et al. 2022 BC Coast data:
    ```javascript
-   var SOTHE_FOREST_BIOMASS = 'projects/sat-io/open-datasets/carbon_stocks_ca/forest_carbon_2019';
+   // Required for blending with 50-100cm depth:
    var SOTHE_SOIL_CARBON = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1m250mkgm2version3';
+   var SOTHE_SOIL_CARBON_UNCERTAINTY = 'projects/northstarlabs/assets/McMasterWWFCanadasoilcarbon1muncertainty250mkgm2version30';
+
+   // Optional (not used for priors):
+   var SOTHE_FOREST_BIOMASS = 'projects/sat-io/open-datasets/carbon_stocks_ca/forest_carbon_2019';
    ```
 
-5. **Run Script**
+5. **Understand the Blending Process**:
+
+   The script will:
+   - Calculate carbon stocks from SoilGrids for all 4 VM0033 depths
+   - For the 50-100cm depth (75 cm midpoint):
+     - Use precision-weighted average: `w = 1/SE²`
+     - Blended mean = `(w_SoilGrids × mean_SoilGrids + w_Sothe × mean_Sothe) / (w_SoilGrids + w_Sothe)`
+     - Blended SE = `sqrt(1 / (w_SoilGrids + w_Sothe))`
+     - Result: Lower uncertainty than either source alone
+   - For other depths (7.5, 22.5, 40 cm): Use SoilGrids only
+
+6. **Run Script**
    - Click "Run" button
+   - Check console for blending confirmation
    - Wait for Tasks to appear in Tasks tab
 
-6. **Export All Tasks**
+7. **Export All Tasks**
    - Go to Tasks tab (top right)
-   - Click "RUN" for each task
+   - Click "RUN" for each task (~13 tasks)
    - Files will export to Google Drive
 
 ### Expected GEE Exports:
 
+**Required Files for Bayesian Workflow** (8 files total):
+
 **Prior Mean Files** (4 files - carbon stocks in kg/m²):
-- `carbon_stock_prior_mean_7.5cm.tif`
-- `carbon_stock_prior_mean_22.5cm.tif`
-- `carbon_stock_prior_mean_40cm.tif`
-- `carbon_stock_prior_mean_75cm.tif`
+- `carbon_stock_prior_mean_7.5cm.tif` ← SoilGrids only
+- `carbon_stock_prior_mean_22.5cm.tif` ← SoilGrids only
+- `carbon_stock_prior_mean_40cm.tif` ← SoilGrids only
+- `carbon_stock_prior_mean_75cm.tif` ← **SoilGrids + Sothe et al. blended**
 
 **Prior Uncertainty Files** (4 files - carbon stocks in kg/m²):
-- `carbon_stock_prior_se_7.5cm.tif`
-- `carbon_stock_prior_se_22.5cm.tif`
-- `carbon_stock_prior_se_40cm.tif`
-- `carbon_stock_prior_se_75cm.tif`
+- `carbon_stock_prior_se_7.5cm.tif` ← SoilGrids only
+- `carbon_stock_prior_se_22.5cm.tif` ← SoilGrids only
+- `carbon_stock_prior_se_40cm.tif` ← SoilGrids only
+- `carbon_stock_prior_se_75cm.tif` ← **SoilGrids + Sothe et al. blended (reduced uncertainty)**
 
-**Optional**:
-- `uncertainty_strata.tif` (for stratified sampling)
+**Optional Files for Diagnostics**:
+- `carbon_stock_prior_cv_7.5cm.tif` - Coefficient of variation (%)
+- `carbon_stock_prior_cv_22.5cm.tif`
+- `carbon_stock_prior_cv_40cm.tif`
+- `carbon_stock_prior_cv_75cm.tif`
+- `uncertainty_strata.tif` - For Neyman sampling visualization
 
 ### Download from Google Drive:
 
@@ -165,8 +201,11 @@ CompositeSampling_CoastalBlueCarbon_Wrokflow/
 
 **Purpose**: Process and align GEE-exported priors to study area
 
+**Important**: This module expects files already named `carbon_stock_prior_mean_*.tif` and `carbon_stock_prior_se_*.tif` from the GEE export script. The 75cm depth file contains the SoilGrids + Sothe et al. blended layer.
+
 ### Prerequisites:
 - ✓ GEE exports downloaded to `data_prior/gee_exports/`
+- ✓ Files correctly named: `carbon_stock_prior_mean_7.5cm.tif`, etc.
 - ✓ `USE_BAYESIAN = TRUE` in config
 - ✓ Study area boundary (optional): `data_raw/study_area_boundary.shp`
 
@@ -176,12 +215,12 @@ source("00c_bayesian_prior_setup_bluecarbon.R")
 ```
 
 ### What It Does:
-1. Loads GEE-exported prior maps
-2. Reprojects to EPSG:3005 (BC Albers)
+1. Loads GEE-exported prior maps (already in carbon stocks kg/m²)
+2. Reprojects to EPSG:3005 (BC Albers) if needed
 3. Clips to study area boundary (if provided)
 4. Aligns all rasters to common grid
 5. Inflates uncertainty by `PRIOR_UNCERTAINTY_INFLATION` factor (conservative)
-6. Creates metadata CSV with source information
+6. Creates metadata CSV documenting data sources
 
 ### Inputs:
 ```
@@ -194,16 +233,17 @@ data_prior/gee_exports/
 ### Outputs:
 ```
 data_prior/
-├── carbon_stock_prior_mean_7.5cm.tif     ← Processed prior mean (kg/m²)
-├── carbon_stock_prior_mean_22.5cm.tif
-├── carbon_stock_prior_mean_40cm.tif
-├── carbon_stock_prior_mean_75cm.tif
-├── carbon_stock_prior_se_7.5cm.tif       ← Processed prior SE (kg/m²)
-├── carbon_stock_prior_se_22.5cm.tif
-├── carbon_stock_prior_se_40cm.tif
-├── carbon_stock_prior_se_75cm.tif
+├── carbon_stock_prior_mean_7.5cm.tif     ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_mean_22.5cm.tif    ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_mean_40cm.tif      ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_mean_75cm.tif      ← SoilGrids + Sothe blended (kg/m²)
+├── carbon_stock_prior_se_7.5cm.tif       ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_se_22.5cm.tif      ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_se_40cm.tif        ← SoilGrids only (kg/m²)
+├── carbon_stock_prior_se_75cm.tif        ← SoilGrids + Sothe blended (reduced uncertainty)
 ├── uncertainty_strata.tif       ← Uncertainty strata (1=low, 2=med, 3=high)
-└── prior_metadata.csv           ← Source info and statistics
+├── prior_metadata.csv           ← Source info and statistics
+└── prior_depth_summary.csv      ← Depth-specific summary statistics
 ```
 
 ### Expected Output:
@@ -551,8 +591,17 @@ USE_BAYESIAN <- TRUE
 ## REFERENCES
 
 **Data Sources**:
-- Poggio, L., et al. (2021). SoilGrids 2.0: Global soil information. *Soil*, 7, 217-240.
-- Sothe, C., et al. (2022). Large soil carbon storage in terrestrial ecosystems of Canada. *Global Biogeochemical Cycles*, 36(4).
+- **Poggio, L., et al. (2021)**. SoilGrids 2.0: producing soil information for the globe with quantified spatial uncertainty. *Soil*, 7, 217-240.
+  - Global dataset at 250m resolution
+  - Soil organic carbon (SOC) and bulk density at multiple depths
+  - Used as baseline for all VM0033 depth intervals
+  - Access: Google Earth Engine (`projects/soilgrids-isric/`)
+
+- **Sothe, C., et al. (2022)**. Large soil carbon storage in terrestrial ecosystems of Canada. *Global Biogeochemical Cycles*, 36(4), e2021GB007213.
+  - Regional dataset for Canada at 250m resolution
+  - Total soil carbon to 1m depth with uncertainty estimates
+  - Blended with SoilGrids for 50-100cm depth to improve regional accuracy
+  - Access: Google Earth Engine (`projects/northstarlabs/assets/`)
 
 **Methodology**:
 - Neyman, J. (1934). On the two different aspects of the representative method. *Journal of the Royal Statistical Society*, 97(4), 558-625.

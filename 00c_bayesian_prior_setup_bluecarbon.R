@@ -3,25 +3,35 @@
 # ============================================================================
 # PURPOSE: Process GEE-exported prior maps for Bayesian carbon stock estimation
 #
+# DATA SOURCES STRATEGY:
+#   • SoilGrids v2.0 (Poggio et al. 2021): Global baseline for all depths
+#   • Sothe et al. 2022 BC Coast: Regional refinement for 50-100cm depth only
+#   • Blending method: Precision-weighted average for 75cm depth (50-100cm interval)
+#
 # PREREQUISITES:
 #   1. Run GEE_EXPORT_BAYESIAN_PRIORS.js in Google Earth Engine
+#      - Script calculates carbon stocks from SoilGrids for all VM0033 depths
+#      - Script blends SoilGrids with Sothe et al. for 50-100cm depth
+#      - Exports files with VM0033 midpoint depths: 7.5, 22.5, 40, 75 cm
 #   2. Download exported files from Google Drive
 #   3. Place files in data_prior/gee_exports/ directory
 #
 # INPUTS:
-#   - data_prior/gee_exports/carbon_stock_prior_mean_*cm.tif (from GEE - carbon stocks kg/m²)
-#   - data_prior/gee_exports/carbon_stock_prior_se_*cm.tif (from GEE - carbon stocks kg/m²)
-#   - data_prior/gee_exports/uncertainty_strata.tif (from GEE - optional)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_7.5cm.tif (SoilGrids only)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_22.5cm.tif (SoilGrids only)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_40cm.tif (SoilGrids only)
+#   - data_prior/gee_exports/carbon_stock_prior_mean_75cm.tif (SoilGrids + Sothe blended)
+#   - data_prior/gee_exports/carbon_stock_prior_se_*.tif (corresponding uncertainties)
+#   - data_prior/gee_exports/uncertainty_strata.tif (optional - for Neyman sampling)
 #   - blue_carbon_config.R (configuration)
 #
 # OUTPUTS:
-#   - data_prior/carbon_stock_prior_mean_*cm.tif (processed and aligned - kg/m²)
-#   - data_prior/carbon_stock_prior_se_*cm.tif (processed and aligned - kg/m²)
+#   - data_prior/carbon_stock_prior_mean_*.tif (processed and aligned - kg/m²)
+#   - data_prior/carbon_stock_prior_se_*.tif (processed and aligned - kg/m²)
 #   - data_prior/uncertainty_strata.tif (for Neyman sampling)
-#   - data_prior/prior_metadata.csv (source information)
+#   - data_prior/prior_metadata.csv (source information with blending documented)
 #
-# NOTE: This module now processes carbon stock priors (kg/m²) instead of SOC (g/kg)
-#       for consistency with the updated workflow (Modules 03-05).
+# NOTE: All priors are in carbon stocks (kg/m²) for consistency with Modules 03-06
 #
 # ============================================================================
 
@@ -232,6 +242,15 @@ for (depth in vm0033_depths) {
   se_vals <- se_vals[!is.na(se_vals)]
 
   if (length(mean_vals) > 0) {
+    # Determine data source
+    # 75 cm depth (50-100cm interval) is blended SoilGrids + Sothe et al.
+    # Other depths are SoilGrids only
+    data_source <- if (depth == 75) {
+      "SoilGrids_v2.0 + Sothe_et_al_2022_blended"
+    } else {
+      "SoilGrids_v2.0"
+    }
+
     processed_files <- rbind(processed_files, data.frame(
       depth_cm = depth,
       mean_file = basename(mean_out),
@@ -242,7 +261,7 @@ for (depth in vm0033_depths) {
       cv_pct = 100 * mean(se_vals, na.rm = TRUE) / mean(mean_vals, na.rm = TRUE),
       n_pixels = length(mean_vals),
       area_ha = length(mean_vals) * (PREDICTION_RESOLUTION^2) / 10000,
-      source = "GEE_Bayesian_Priors"
+      source = data_source
     ))
 
     log_message(sprintf("    Stats: Mean=%.2f kg/m², SE=%.2f kg/m², CV=%.1f%%",
