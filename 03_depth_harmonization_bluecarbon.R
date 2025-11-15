@@ -310,29 +310,49 @@ predict_at_standard_depths <- function(core_data, standard_depths,
   )
 
   # Calculate carbon stock (kg/m²) from harmonized SOC and BD
-  # Formula: SOC (g/kg) / 1000 × BD (g/cm³) × depth_increment (cm) / 10 = kg/m²
-  # For VM0033 standard depths, calculate incremental stocks
+  # Formula: SOC (g/kg) / 1000 × BD (g/cm³) × thickness (cm) / 10 = kg/m²
+  # CRITICAL: Use VM0033 interval thicknesses, NOT interpolated increments
+  # Each midpoint represents a specific VM0033 interval:
+  #   7.5 cm → 0-15 cm interval (15 cm thick)
+  #   22.5 cm → 15-30 cm interval (15 cm thick)
+  #   40 cm → 30-50 cm interval (20 cm thick)
+  #   75 cm → 50-100 cm interval (50 cm thick)
   result$carbon_stock_kg_m2 <- NA_real_
 
   for (i in 1:nrow(result)) {
-    # Get depth increment for this depth
-    if (i == 1) {
-      depth_top <- 0
-      depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
-    } else if (i == nrow(result)) {
-      depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
-      depth_bottom <- MAX_CORE_DEPTH
+    curr_depth <- result$depth_cm[i]
+
+    # Match depth to VM0033 interval to get correct thickness
+    interval_match <- which(VM0033_DEPTH_INTERVALS$depth_midpoint == curr_depth)
+
+    if (length(interval_match) == 1) {
+      # Use VM0033 interval thickness (correct approach)
+      thickness_cm <- VM0033_DEPTH_INTERVALS$thickness_cm[interval_match]
+
     } else {
-      depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
-      depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
+      # Fallback for non-standard depths (shouldn't happen in VM0033 workflow)
+      warning(sprintf("Core %s: Depth %.1f cm not in VM0033 intervals - using interpolated increment",
+                     unique(core_data$core_id), curr_depth))
+
+      # Use interpolated increment as fallback
+      if (i == 1) {
+        depth_top <- 0
+        depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
+      } else if (i == nrow(result)) {
+        depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
+        depth_bottom <- MAX_CORE_DEPTH
+      } else {
+        depth_top <- (result$depth_cm[i-1] + result$depth_cm[i]) / 2
+        depth_bottom <- (result$depth_cm[i] + result$depth_cm[i+1]) / 2
+      }
+      thickness_cm <- depth_bottom - depth_top
     }
 
-    depth_increment <- depth_bottom - depth_top
-
-    # Calculate carbon stock for this increment
+    # Calculate carbon stock for this VM0033 interval
+    # Stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × thickness (cm) / 10
     result$carbon_stock_kg_m2[i] <- (result$soc_harmonized[i] / 1000) *
                                      result$bd_harmonized[i] *
-                                     depth_increment / 10
+                                     thickness_cm / 10
   }
 
   # Add metadata
