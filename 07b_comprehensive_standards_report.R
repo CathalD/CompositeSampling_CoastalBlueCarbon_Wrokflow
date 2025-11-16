@@ -422,10 +422,20 @@ if (file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
 for (method in c("rf", "kriging")) {
   vm0033_file <- sprintf("outputs/carbon_stocks/carbon_stocks_conservative_vm0033_%s.csv", method)
   if (file.exists(vm0033_file)) {
-    stocks <- read.csv(vm0033_file)
-    stocks$method <- method
-    workflow_data$carbon_stocks <- rbind(workflow_data$carbon_stocks, stocks)
-    log_message(sprintf("  Loaded %s carbon stocks", method))
+    stocks <- tryCatch({
+      read.csv(vm0033_file)
+    }, error = function(e) {
+      log_message(sprintf("  Could not load %s carbon stocks: %s", method, e$message), "WARNING")
+      NULL
+    })
+
+    if (!is.null(stocks) && nrow(stocks) > 0) {
+      stocks$method <- method
+      workflow_data$carbon_stocks <- rbind(workflow_data$carbon_stocks, stocks)
+      log_message(sprintf("  Loaded %s carbon stocks", method))
+    } else {
+      log_message(sprintf("  %s carbon stocks file is empty", method), "WARNING")
+    }
   }
 }
 
@@ -433,10 +443,20 @@ for (method in c("rf", "kriging")) {
 for (method in c("rf", "kriging")) {
   cv_file <- sprintf("diagnostics/crossvalidation/%s_cv_results.csv", method)
   if (file.exists(cv_file)) {
-    cv_data <- read.csv(cv_file)
-    cv_data$method <- method
-    workflow_data$cv_results <- rbind(workflow_data$cv_results, cv_data)
-    log_message(sprintf("  Loaded %s CV results", method))
+    cv_data <- tryCatch({
+      read.csv(cv_file)
+    }, error = function(e) {
+      log_message(sprintf("  Could not load %s CV results: %s", method, e$message), "WARNING")
+      NULL
+    })
+
+    if (!is.null(cv_data) && nrow(cv_data) > 0) {
+      cv_data$method <- method
+      workflow_data$cv_results <- rbind(workflow_data$cv_results, cv_data)
+      log_message(sprintf("  Loaded %s CV results", method))
+    } else {
+      log_message(sprintf("  %s CV results file is empty", method), "WARNING")
+    }
   }
 }
 
