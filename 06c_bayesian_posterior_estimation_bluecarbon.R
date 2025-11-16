@@ -282,6 +282,30 @@ for (depth_str in names(priors)) {
   prior_mean <- priors[[depth_str]]$mean
   prior_se <- priors[[depth_str]]$se
 
+  # Validate prior data
+  log_message("  Validating prior data...")
+  prior_mean_stats <- global(prior_mean, c("min", "max", "mean"), na.rm = TRUE)
+  prior_se_stats <- global(prior_se, c("min", "max", "mean"), na.rm = TRUE)
+
+  n_valid_prior <- sum(!is.na(values(prior_mean, mat = FALSE)))
+  n_total_prior <- length(values(prior_mean, mat = FALSE))
+
+  log_message(sprintf("    Prior mean: min=%.2f, max=%.2f, mean=%.2f (%d/%d valid cells)",
+                     prior_mean_stats[1,1], prior_mean_stats[1,2], prior_mean_stats[1,3],
+                     n_valid_prior, n_total_prior))
+  log_message(sprintf("    Prior SE: min=%.2f, max=%.2f, mean=%.2f",
+                     prior_se_stats[1,1], prior_se_stats[1,2], prior_se_stats[1,3]))
+
+  if (n_valid_prior == 0) {
+    log_message("  ERROR: Prior raster has no valid values - skipping depth", "ERROR")
+    next
+  }
+
+  if (is.na(prior_se_stats[1,3]) || prior_se_stats[1,3] <= 0) {
+    log_message("  ERROR: Prior SE has no valid values or all zeros - skipping depth", "ERROR")
+    next
+  }
+
   # === Load likelihood (field data - carbon stocks in kg/m²) ===
   # Note: Files use rounded depths (7.5→8, 22.5→22) in filenames
   depth_rounded <- round(depth)
@@ -315,7 +339,7 @@ for (depth_str in names(priors)) {
   }
 
   if (!file.exists(likelihood_mean_file)) {
-    log_message(sprintf("  Likelihood mean not found: %s", basename(likelihood_mean_file)), "WARNING")
+    log_message(sprintf("  ERROR: Likelihood mean not found: %s", basename(likelihood_mean_file)), "ERROR")
     next
   }
 
@@ -324,8 +348,32 @@ for (depth_str in names(priors)) {
   if (file.exists(likelihood_se_file)) {
     likelihood_se <- rast(likelihood_se_file)
   } else {
-    log_message("  SE not found - using 15% of mean", "WARNING")
+    log_message("  WARNING: SE not found - using 15% of mean", "WARNING")
     likelihood_se <- likelihood_mean * 0.15
+  }
+
+  # Validate likelihood data
+  log_message("  Validating likelihood data...")
+  likelihood_mean_stats <- global(likelihood_mean, c("min", "max", "mean"), na.rm = TRUE)
+  likelihood_se_stats <- global(likelihood_se, c("min", "max", "mean"), na.rm = TRUE)
+
+  n_valid_likelihood <- sum(!is.na(values(likelihood_mean, mat = FALSE)))
+  n_total_likelihood <- length(values(likelihood_mean, mat = FALSE))
+
+  log_message(sprintf("    Likelihood mean: min=%.2f, max=%.2f, mean=%.2f (%d/%d valid cells)",
+                     likelihood_mean_stats[1,1], likelihood_mean_stats[1,2], likelihood_mean_stats[1,3],
+                     n_valid_likelihood, n_total_likelihood))
+  log_message(sprintf("    Likelihood SE: min=%.2f, max=%.2f, mean=%.2f",
+                     likelihood_se_stats[1,1], likelihood_se_stats[1,2], likelihood_se_stats[1,3]))
+
+  if (n_valid_likelihood == 0) {
+    log_message("  ERROR: Likelihood raster has no valid values - skipping depth", "ERROR")
+    next
+  }
+
+  if (is.na(likelihood_se_stats[1,3]) || likelihood_se_stats[1,3] <= 0) {
+    log_message("  ERROR: Likelihood SE has no valid values or all zeros - skipping depth", "ERROR")
+    next
   }
 
   # Ensure spatial alignment
@@ -333,6 +381,24 @@ for (depth_str in names(priors)) {
     log_message("  Resampling likelihood to match prior grid")
     likelihood_mean <- resample(likelihood_mean, prior_mean, method = "bilinear")
     likelihood_se <- resample(likelihood_se, prior_se, method = "bilinear")
+  }
+
+  # Check for spatial overlap after resampling
+  log_message("  Checking spatial overlap...")
+  # Create a mask of overlapping non-NA cells
+  overlap_mask <- !is.na(prior_mean) & !is.na(likelihood_mean) &
+                  !is.na(prior_se) & !is.na(likelihood_se)
+  n_overlap <- sum(values(overlap_mask, mat = FALSE), na.rm = TRUE)
+
+  log_message(sprintf("    Overlapping valid cells: %d", n_overlap))
+
+  if (n_overlap == 0) {
+    log_message("  ERROR: No spatial overlap between prior and likelihood - check study areas", "ERROR")
+    log_message("    Prior extent:", "ERROR")
+    log_message(sprintf("      %s", as.character(ext(prior_mean))), "ERROR")
+    log_message("    Likelihood extent:", "ERROR")
+    log_message(sprintf("      %s", as.character(ext(likelihood_mean))), "ERROR")
+    next
   }
 
   # === Adjust field precision by sample density ===
