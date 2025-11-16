@@ -317,6 +317,103 @@ fit_variogram_auto <- function(sp_data, formula, cutoff = NULL) {
   })
 }
 
+#' Test for spatial autocorrelation in residuals
+#'
+#' Uses Moran's I test to detect spatial autocorrelation in kriging residuals.
+#' Significant autocorrelation suggests the variogram model may need adjustment.
+#'
+#' @param residuals Vector of kriging residuals
+#' @param coords Coordinate matrix (x, y)
+#' @param k Number of nearest neighbors for spatial weights (default 5)
+#' @return Moran's I test result or NULL if test fails
+#'
+#' @details
+#' Moran's I ranges from -1 (perfect dispersion) to +1 (perfect clustering).
+#' Values near 0 indicate no spatial autocorrelation (desired for residuals).
+#'
+#' For kriging validation:
+#' - Non-significant Moran's I → Model adequately captures spatial structure
+#' - Significant positive I → Residuals still spatially correlated (underfitting)
+#' - Significant negative I → Over-smoothing (less common)
+#'
+#' Requires spdep package. Returns NULL gracefully if unavailable.
+#'
+#' Reference: Moran, P.A.P. (1950). Notes on continuous stochastic phenomena.
+#' Biometrika, 37(1/2), 17-23.
+#'
+#' @examples
+#' moran_test <- test_spatial_autocorrelation(residuals, coords)
+#' if (!is.null(moran_test) && moran_test$p.value < 0.05) {
+#'   # Residuals show significant spatial autocorrelation
+#' }
+test_spatial_autocorrelation <- function(residuals, coords, k = 5) {
+
+  # Check if spdep package is available
+  if (!requireNamespace("spdep", quietly = TRUE)) {
+    log_message("spdep package not available - skipping Moran's I test",
+               level = "WARNING")
+    log_message("Install with: install.packages('spdep')", level = "INFO")
+    return(NULL)
+  }
+
+  # Need at least 10 points for meaningful test
+  if (length(residuals) < 10) {
+    log_message("Too few points for Moran's I test (need >= 10)",
+               level = "INFO")
+    return(NULL)
+  }
+
+  tryCatch({
+    # Create spatial neighbors (k nearest neighbors)
+    k_actual <- min(k, floor(length(residuals) / 2))  # Ensure k is reasonable
+    nb <- spdep::knn2nb(spdep::knearneigh(coords, k = k_actual))
+
+    # Convert to spatial weights list
+    listw <- spdep::nb2listw(nb, style = "W", zero.policy = TRUE)
+
+    # Perform Moran's I test
+    moran_result <- spdep::moran.test(residuals, listw, zero.policy = TRUE)
+
+    # Interpret results
+    moran_i <- moran_result$estimate["Moran I statistic"]
+    p_value <- moran_result$p.value
+
+    if (p_value < 0.05) {
+      if (moran_i > 0) {
+        log_message(
+          sprintf("Significant positive spatial autocorrelation detected (I = %.3f, p = %.4f)",
+                 moran_i, p_value),
+          level = "WARNING"
+        )
+        log_message("  → Residuals still spatially correlated - variogram may need adjustment",
+                   level = "WARNING")
+      } else {
+        log_message(
+          sprintf("Significant negative spatial autocorrelation detected (I = %.3f, p = %.4f)",
+                 moran_i, p_value),
+          level = "WARNING"
+        )
+        log_message("  → Possible over-smoothing", level = "WARNING")
+      }
+    } else {
+      log_message(
+        sprintf("No significant spatial autocorrelation in residuals (I = %.3f, p = %.4f)",
+               moran_i, p_value),
+        level = "INFO"
+      )
+      log_message("  ✓ Variogram model adequately captures spatial structure",
+                 level = "INFO")
+    }
+
+    return(moran_result)
+
+  }, error = function(e) {
+    log_message(sprintf("Moran's I test failed: %s", e$message),
+               level = "WARNING")
+    return(NULL)
+  })
+}
+
 #' Perform cross-validation for kriging
 #' @param sp_data Spatial data
 #' @param formula Formula for kriging
@@ -427,13 +524,19 @@ crossvalidate_kriging <- function(sp_data, formula, vgm_model, use_spatial_cv = 
     ss_tot <- sum((cv_result$observed - mean(cv_result$observed, na.rm = TRUE))^2, na.rm = TRUE)
     r2 <- 1 - (ss_res / ss_tot)
 
+    # Test for spatial autocorrelation in residuals
+    log_message("    Testing spatial autocorrelation in residuals...", "INFO")
+    coords <- st_coordinates(cv_result)
+    moran_test <- test_spatial_autocorrelation(cv_result$residual, coords, k = 5)
+
     return(list(
       rmse = rmse,
       mae = mae,
       me = me,
       r2 = r2,
       method = "kfold_cv",
-      cv_data = cv_result
+      cv_data = cv_result,
+      moran_test = moran_test
     ))
 
   }, error = function(e) {
@@ -510,7 +613,7 @@ plot_variogram <- function(vgm_emp, vgm_model, stratum_name, depth_cm) {
     plot(vgm_emp, vgm_model,
          main = sprintf("Carbon Stock Variogram: %s at %.0f cm", stratum_name, depth_cm),
          xlab = "Distance (m)",
-         ylab = "Semivariance (kg C/m²)²")
+         ylab = "Semivariance (kg/m²)²")
     
     dev.off()
     
@@ -973,54 +1076,27 @@ for (depth in STANDARD_DEPTHS) {
       aoa_pct_in = aoa_pct
     )
     
-    log_message(sprintf("  Mean prediction: %.2f ± %.2f g/kg", 
+    log_message(sprintf("  Mean prediction: %.2f ± %.2f kg/m²",
                        kriging_results[[result_key]]$mean_prediction,
                        kriging_results[[result_key]]$sd_prediction))
   }
 }
 
 # ============================================================================
-# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# VM0033 LAYER AGGREGATION: CARBON STOCK SUMMARIES
 # ============================================================================
 
 log_message("\n=== VM0033 Layer Aggregation ===")
+log_message("NOTE: Carbon stocks already calculated in Module 03 (kg/m² per depth interval)")
+log_message("      This section aggregates layers and converts to VM0033 reporting units (Mg C/ha)")
 
 # Create output directory for stocks
 dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
-
-# Load bulk density data (check multiple possible sources)
-bd_data <- NULL
-
-# Try to load bulk density from Module 01
-if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
-  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
-  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
-    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
-    bd_data <- cores_all %>%
-      filter(!is.na(!!sym(bd_field))) %>%
-      group_by(stratum) %>%
-      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
-    log_message(sprintf("Loaded bulk density data from cores (n=%d strata)", nrow(bd_data)))
-  }
-}
-
-# Default BD values if no data available (typical blue carbon values)
-# From literature: mangroves ~0.4-0.6, salt marshes ~0.3-0.8 g/cm³
-default_bd <- 0.5  # g/cm³ - conservative mid-range estimate
 
 # Process each stratum
 for (stratum_name in unique(cores_standard$stratum)) {
 
   log_message(sprintf("\nAggregating stocks for: %s", stratum_name))
-
-  # Get BD for this stratum
-  if (!is.null(bd_data) && stratum_name %in% bd_data$stratum) {
-    bd_value <- bd_data$mean_bd[bd_data$stratum == stratum_name]
-    log_message(sprintf("  Using measured BD: %.3f g/cm³", bd_value))
-  } else {
-    bd_value <- default_bd
-    log_message(sprintf("  Using default BD: %.3f g/cm³ (no data available)", bd_value))
-  }
 
   # Initialize stack rasters for this stratum
   stock_layers <- list()
@@ -1180,7 +1256,7 @@ if (nrow(cv_results_all) > 0) {
       title = "Kriging Cross-Validation RMSE",
       subtitle = "By stratum and depth (carbon stock predictions)",
       x = "Depth (cm)",
-      y = "CV RMSE (kg C/m²)",
+      y = "CV RMSE (kg/m²)",
       fill = "Stratum"
     ) +
     theme_minimal() +
@@ -1260,8 +1336,8 @@ if (nrow(cv_results_all) > 0) {
         labs(
           title = "Kriging Method Comparison",
           subtitle = "Ordinary vs Simple Kriging CV RMSE",
-          x = "Ordinary Kriging RMSE (g/kg)",
-          y = "Simple Kriging RMSE (g/kg)",
+          x = "Ordinary Kriging RMSE (kg/m²)",
+          y = "Simple Kriging RMSE (kg/m²)",
           color = "Stratum",
           caption = "Points below line indicate Simple Kriging performs better"
         ) +
