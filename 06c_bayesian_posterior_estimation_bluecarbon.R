@@ -263,13 +263,15 @@ for (i in 1:nrow(sample_coords)) {
   # Create buffer around sample
   sample_buffer <- st_buffer(samples_sf[i, ], dist = bandwidth)
 
-  # Rasterize buffer
-  buffer_rast <- rasterize(vect(sample_buffer), template_raster, fun = "sum")
+  # Rasterize buffer - creates 1 where buffer exists, NA elsewhere
+  buffer_rast <- rasterize(vect(sample_buffer), template_raster, field = 1, background = NA)
 
   # Check if buffer overlaps with raster
   if (!is.null(buffer_rast) && !all(is.na(values(buffer_rast, mat = FALSE)))) {
-    # Add to density
-    sample_density <- sample_density + buffer_rast
+    # Add to density using NA-safe addition
+    # Where buffer_rast is 1, add 1 to sample_density
+    # Where buffer_rast is NA, keep sample_density unchanged
+    sample_density <- ifel(is.na(buffer_rast), sample_density, sample_density + 1)
     n_samples_added <- n_samples_added + 1
   }
 }
@@ -284,8 +286,9 @@ if (n_samples_added == 0) {
   stop("Cannot proceed: no samples within prior extent")
 }
 
-# Normalize by total samples
-sample_density <- sample_density / nrow(samples_sf)
+# Normalize by total samples to get relative density (0 to 1 scale)
+# Areas with more sample coverage will have higher density values
+sample_density <- sample_density / n_samples_added
 
 # Check for valid density values
 density_stats <- global(sample_density, c("min", "max", "mean"), na.rm = TRUE)
