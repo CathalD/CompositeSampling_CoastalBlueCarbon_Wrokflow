@@ -572,17 +572,21 @@ print('════════════════════════�
 var VM0033_EXPORT_INTERVALS = ['0-15', '15-30', '30-50', '50-100'];
 
 // Export carbon stocks and SE for each VM0033 interval
-// Using VM0033 midpoint depths in filenames: 7.5, 22.5, 40, 75 cm
+// Using VM0033 midpoint depths in filenames: 7_5, 22_5, 40, 75 cm
+// Note: Replace decimal points with underscores for GIS compatibility
 VM0033_EXPORT_INTERVALS.forEach(function(interval) {
   var midpoint = VM0033_INTERVALS[interval].midpoint;
 
+  // Convert decimal to underscore format (e.g., 7.5 → 7_5, 40 → 40)
+  var midpoint_str = String(midpoint).replace('.', '_');
+
   // Export Mean Carbon Stock (kg/m²)
-  // File naming: carbon_stock_prior_mean_7.5cm.tif
+  // File naming: carbon_stock_prior_mean_7_5cm.tif
   Export.image.toDrive({
     image: vm0033_stocks[interval].clip(studyArea),
-    description: 'carbon_stock_prior_mean_' + midpoint + 'cm',
+    description: 'carbon_stock_prior_mean_' + midpoint_str + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'carbon_stock_prior_mean_' + midpoint + 'cm',
+    fileNamePrefix: 'carbon_stock_prior_mean_' + midpoint_str + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
@@ -590,12 +594,12 @@ VM0033_EXPORT_INTERVALS.forEach(function(interval) {
   });
 
   // Export Standard Error (kg/m²)
-  // File naming: carbon_stock_prior_se_7.5cm.tif
+  // File naming: carbon_stock_prior_se_7_5cm.tif
   Export.image.toDrive({
     image: vm0033_stocks_se[interval].clip(studyArea),
-    description: 'carbon_stock_prior_se_' + midpoint + 'cm',
+    description: 'carbon_stock_prior_se_' + midpoint_str + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'carbon_stock_prior_se_' + midpoint + 'cm',
+    fileNamePrefix: 'carbon_stock_prior_se_' + midpoint_str + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
@@ -605,9 +609,9 @@ VM0033_EXPORT_INTERVALS.forEach(function(interval) {
   // Export Coefficient of Variation (%) - for diagnostic purposes
   Export.image.toDrive({
     image: cv_layers[interval].clip(studyArea),
-    description: 'carbon_stock_prior_cv_' + midpoint + 'cm',
+    description: 'carbon_stock_prior_cv_' + midpoint_str + 'cm',
     folder: EXPORT_FOLDER,
-    fileNamePrefix: 'carbon_stock_prior_cv_' + midpoint + 'cm',
+    fileNamePrefix: 'carbon_stock_prior_cv_' + midpoint_str + 'cm',
     region: studyArea,
     scale: EXPORT_SCALE,
     crs: EXPORT_CRS,
@@ -640,7 +644,7 @@ print('════════════════════════�
 print('Study Area Bounds:', studyArea.bounds());
 print('Export Scale:', EXPORT_SCALE, 'meters');
 print('Export CRS:', EXPORT_CRS);
-print('VM0033 Midpoint Depths: 7.5, 22.5, 40, 75 cm');
+print('VM0033 Midpoint Depths: 7_5, 22_5, 40, 75 cm (underscore format for GIS compatibility)');
 print('');
 print('UNITS: All carbon stocks in kg/m² (kilograms per square meter)');
 print('');
@@ -678,22 +682,22 @@ if (useSothe && sothe_soil !== null) {
   print('  • Result: Regional accuracy + SoilGrids depth pattern preserved');
 }
 print('');
-print('EXPORTED FILES (12 total):');
+print('EXPORTED FILES (13 total):');
 print('  Prior Means (4 files):');
-print('    - carbon_stock_prior_mean_7.5cm.tif');
-print('    - carbon_stock_prior_mean_22.5cm.tif');
+print('    - carbon_stock_prior_mean_7_5cm.tif');
+print('    - carbon_stock_prior_mean_22_5cm.tif');
 print('    - carbon_stock_prior_mean_40cm.tif');
 print('    - carbon_stock_prior_mean_75cm.tif');
 print('');
 print('  Prior Standard Errors (4 files):');
-print('    - carbon_stock_prior_se_7.5cm.tif');
-print('    - carbon_stock_prior_se_22.5cm.tif');
+print('    - carbon_stock_prior_se_7_5cm.tif');
+print('    - carbon_stock_prior_se_22_5cm.tif');
 print('    - carbon_stock_prior_se_40cm.tif');
 print('    - carbon_stock_prior_se_75cm.tif');
 print('');
-print('  Diagnostics (4 files):');
-print('    - carbon_stock_prior_cv_7.5cm.tif (coefficient of variation)');
-print('    - carbon_stock_prior_cv_22.5cm.tif');
+print('  Diagnostics (5 files):');
+print('    - carbon_stock_prior_cv_7_5cm.tif (coefficient of variation)');
+print('    - carbon_stock_prior_cv_22_5cm.tif');
 print('    - carbon_stock_prior_cv_40cm.tif');
 print('    - carbon_stock_prior_cv_75cm.tif');
 print('    - uncertainty_strata.tif (for Neyman sampling)');
