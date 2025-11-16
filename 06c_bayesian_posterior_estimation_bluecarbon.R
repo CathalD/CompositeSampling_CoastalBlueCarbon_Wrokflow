@@ -2,14 +2,15 @@
 # MODULE 06C: BAYESIAN POSTERIOR ESTIMATION (Part 4 - Optional)
 # ============================================================================
 # PURPOSE: Combine Bayesian priors with field data to generate posterior estimates
+#          of carbon stocks (kg/m²) at VM0033 standard depths
 #
 # PREREQUISITES:
-#   - Module 00C: Bayesian prior setup
+#   - Module 00C: Bayesian prior setup (carbon stocks kg/m²)
 #   - Modules 01-03: Data collection and harmonization
-#   - Modules 04-05: RF/Kriging predictions (likelihood)
+#   - Modules 04-05: RF/Kriging predictions (likelihood - carbon stocks kg/m²)
 #
-# THEORY: Bayesian Update
-#   Prior × Likelihood → Posterior
+# THEORY: Bayesian Update for Carbon Stocks
+#   Prior × Likelihood → Posterior (all in kg/m² units)
 #
 #   Precision-weighted average:
 #   τ_prior = 1 / σ²_prior
@@ -17,6 +18,8 @@
 #
 #   μ_posterior = (τ_prior × μ_prior + τ_field × μ_field) / (τ_prior + τ_field)
 #   σ²_posterior = 1 / (τ_prior + τ_field)
+#
+# IMPORTANT: All data are carbon stocks (kg/m²), NOT SOC concentrations (g/kg)
 #
 # INPUTS:
 #   - data_prior/carbon_stock_prior_mean_*.tif (from Module 00C - carbon stocks kg/m²)
@@ -611,9 +614,9 @@ for (depth_str in names(priors)) {
 
   comparison_data <- rbind(comparison_data, comp_df)
 
-  log_message(sprintf("  Prior: %.1f ± %.1f g/kg", mean(prior_vals), mean(prior_se_vals)))
-  log_message(sprintf("  Field: %.1f g/kg", mean(field_vals)))
-  log_message(sprintf("  Posterior: %.1f ± %.1f g/kg", mean(post_vals), mean(post_se_vals)))
+  log_message(sprintf("  Prior: %.2f ± %.2f kg/m²", mean(prior_vals), mean(prior_se_vals)))
+  log_message(sprintf("  Field: %.2f kg/m²", mean(field_vals)))
+  log_message(sprintf("  Posterior: %.2f ± %.2f kg/m²", mean(post_vals), mean(post_se_vals)))
   log_message(sprintf("  Uncertainty reduction: %.1f%%", mean(reduction_vals)))
 }
 
@@ -642,8 +645,8 @@ p1 <- ggplot(comparison_data, aes(x = value, fill = estimate)) +
   scale_fill_manual(values = c("Prior" = "#3498db", "Field" = "#e67e22", "Posterior" = "#2ecc71")) +
   labs(
     title = "Bayesian Update: Prior × Likelihood → Posterior",
-    subtitle = sprintf("%s - %s", PROJECT_NAME, likelihood_method),
-    x = "SOC (g/kg)",
+    subtitle = sprintf("%s - %s (Carbon Stocks)", PROJECT_NAME, likelihood_method),
+    x = "Carbon Stock (kg/m²)",
     y = "Density",
     fill = "Estimate"
   ) +
@@ -686,7 +689,7 @@ cat(sprintf("Precision weighting: %s\n\n", BAYESIAN_WEIGHT_METHOD))
 
 cat("Uncertainty Reduction:\n")
 for (i in 1:nrow(summary_df)) {
-  cat(sprintf("  %.1f cm: %.1f%% (%.1f → %.1f g/kg SE)\n",
+  cat(sprintf("  %.1f cm: %.1f%% (%.2f → %.2f kg/m² SE)\n",
               summary_df$depth[i],
               summary_df$uncertainty_reduction_pct[i],
               summary_df$prior_se[i],
