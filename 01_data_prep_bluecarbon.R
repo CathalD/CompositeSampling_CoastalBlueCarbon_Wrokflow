@@ -199,13 +199,29 @@ validate_coordinates <- function(locations) {
 }
 
 #' Calculate SOC stock for a depth increment
+#'
+#' Standard formula: Stock (kg/m²) = SOC (g/kg) × BD (g/cm³) × depth (cm) / 1000
+#'
+#' @param soc_g_kg Soil organic carbon content (g/kg)
+#' @param bd_g_cm3 Bulk density (g/cm³)
+#' @param depth_top_cm Top depth (cm)
+#' @param depth_bottom_cm Bottom depth (cm)
+#' @return Carbon stock in kg/m²
+#'
+#' @details
+#' Dimensional analysis:
+#' SOC (g C / kg soil) × BD (g soil / cm³) × depth (cm) / 1000
+#' = g C × g / (kg × cm³) × cm / 1000
+#' = g² C / (kg × cm²) / 1000
+#' For 1 m² = 10,000 cm²:
+#' = SOC × BD × depth × 10,000 cm² / (1000 kg/g) / 1000
+#' = SOC × BD × depth / 1000 kg/m²
+#'
+#' Note: To convert to Mg/ha for VM0033 reporting, multiply by 10
+#' (since 1 kg/m² = 10 Mg/ha)
 calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_cm) {
-  # SOC stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) / 10
-  # This is the standard unit for carbon stock reporting and aligns with prior data
-  # Note: To convert to Mg/ha for VM0033 reporting, multiply by 10
-  soc_prop <- soc_g_kg / 1000  # Convert g/kg to kg/kg (proportion)
   depth_increment <- depth_bottom_cm - depth_top_cm
-  soc_stock_kg_m2 <- soc_prop * bd_g_cm3 * depth_increment / 10
+  soc_stock_kg_m2 <- soc_g_kg * bd_g_cm3 * depth_increment / 1000
   return(soc_stock_kg_m2)
 }
 
@@ -233,14 +249,13 @@ calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_c
 #'
 #' @examples
 #' stock <- calculate_soc_stock_with_uncertainty(50, 5, 1.2, 0.1, 0, 15)
-#' # Returns: list(mean = 0.9, se = 0.12)
+#' # Returns: list(mean = 0.9, se = ~0.12)
 calculate_soc_stock_with_uncertainty <- function(soc_g_kg, soc_se, bd_g_cm3, bd_se,
                                                  depth_top_cm, depth_bottom_cm) {
-  soc_prop <- soc_g_kg / 1000
   depth_increment <- depth_bottom_cm - depth_top_cm
 
-  # Mean stock
-  stock_mean <- soc_prop * bd_g_cm3 * depth_increment / 10
+  # Mean stock using correct formula: SOC × BD × depth / 1000
+  stock_mean <- soc_g_kg * bd_g_cm3 * depth_increment / 1000
 
   # Error propagation (first-order Taylor approximation)
   # If SE not provided, use conservative defaults: 10% for SOC, 15% for BD
