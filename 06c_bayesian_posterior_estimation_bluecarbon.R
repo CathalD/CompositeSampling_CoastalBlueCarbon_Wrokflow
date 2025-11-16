@@ -491,15 +491,18 @@ for (depth_str in names(priors)) {
   # === Save outputs ===
   log_message("  Saving posterior rasters...")
 
+  # Format depth for filename (7.5 → 7_5) to match prior file naming
+  depth_str_file <- gsub("\\.", "_", sprintf("%.1f", depth))
+
   # Output files: carbon stock posterior estimates (kg/m²)
   out_mean <- file.path("outputs/predictions/posterior",
-                        sprintf("carbon_stock_posterior_mean_%.1fcm.tif", depth))
+                        sprintf("carbon_stock_posterior_mean_%scm.tif", depth_str_file))
   out_se <- file.path("outputs/predictions/posterior",
-                      sprintf("carbon_stock_posterior_se_%.1fcm.tif", depth))
+                      sprintf("carbon_stock_posterior_se_%scm.tif", depth_str_file))
   out_conservative <- file.path("outputs/predictions/posterior",
-                               sprintf("carbon_stock_posterior_conservative_%.1fcm.tif", depth))
+                               sprintf("carbon_stock_posterior_conservative_%scm.tif", depth_str_file))
   out_info_gain <- file.path("diagnostics/bayesian",
-                            sprintf("information_gain_%.1fcm.tif", depth))
+                            sprintf("information_gain_%scm.tif", depth_str_file))
 
   writeRaster(posterior_mean, out_mean, overwrite = TRUE)
   writeRaster(posterior_se, out_se, overwrite = TRUE)
