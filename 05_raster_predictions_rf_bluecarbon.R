@@ -954,19 +954,26 @@ for (depth in STANDARD_DEPTHS) {
   # ========================================================================
   # AREA OF APPLICABILITY (if CAST available)
   # ========================================================================
-  
+
   if (has_CAST && ENABLE_AOA) {
     log_message("  Calculating Area of Applicability...")
 
     tryCatch({
       # AOA identifies areas where predictions are reliable based on training data
       # Uses dissimilarity index (DI) to flag extrapolation
-      # Passing the RF model enables variable importance weighting for more accurate AOA
+
+      # Create named vector of variable importance weights for AOA
+      # This ensures CAST uses the correct weights without trying to extract from model
+      var_weights <- setNames(var_imp_df$importance, var_imp_df$variable)
+
+      # Only include weights for variables that are in the covariates
+      var_weights <- var_weights[names(var_weights) %in% covariate_names]
+
       aoa_result <- aoa(
         newdata = covariate_stack,  # Raster stack for prediction
         train = predictors,          # Training data (dataframe)
         variables = covariate_names, # Variables to use
-        model = rf_model             # RF model for variable importance weighting
+        weight = var_weights         # Explicit variable importance weights (fixes caret::varImp issue)
       )
 
       # Save AOA (binary mask: 1 = inside AOA, 0 = outside AOA)
