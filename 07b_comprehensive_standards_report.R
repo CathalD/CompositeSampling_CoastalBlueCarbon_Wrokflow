@@ -1015,7 +1015,7 @@ for (method in names(workflow_data$spatial_predictions)) {
   }
 }
 
-html_content <- paste0(html_content, '
+html_content <- paste0(html_content, sprintf('
 </ul>
 </div>
 
