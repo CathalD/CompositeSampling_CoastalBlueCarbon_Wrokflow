@@ -339,11 +339,52 @@ for (depth_str in names(priors)) {
   log_message("  Adjusting field precision by sample density...")
 
   # Higher sample density → lower SE (higher precision)
-  likelihood_se_adjusted <- likelihood_se / weight_factor
+  # Add safeguard: prevent division by very small weight factors
+  weight_factor_safe <- clamp(weight_factor, lower = 0.1, upper = 2.0)
+  likelihood_se_adjusted <- likelihood_se / weight_factor_safe
 
   # === Calculate precisions (inverse variance) ===
-  tau_prior <- 1 / (prior_se^2)
-  tau_field <- 1 / (likelihood_se_adjusted^2)
+  # Add safeguards to prevent Inf/NaN
+  prior_var <- prior_se^2
+  prior_var <- clamp(prior_var, lower = 0.001, upper = 1000)  # Prevent extreme values
+  tau_prior <- 1 / prior_var
+
+  field_var <- likelihood_se_adjusted^2
+  field_var <- clamp(field_var, lower = 0.001, upper = 1000)
+  tau_field <- 1 / field_var
+
+  # Check for invalid precisions
+  if (any(is.na(values(tau_prior, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  WARNING: Prior precision contains NA values", "WARNING")
+  }
+  if (any(is.na(values(tau_field, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  WARNING: Field precision contains NA values", "WARNING")
+  }
+  if (any(is.infinite(values(tau_prior, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  WARNING: Prior precision contains Inf values", "WARNING")
+  }
+  if (any(is.infinite(values(tau_field, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  WARNING: Field precision contains Inf values", "WARNING")
+  }
+
+  # === Diagnostic output ===
+  log_message("  Diagnostics:")
+  log_message(sprintf("    Prior SE range: %.2f - %.2f (mean: %.2f)",
+                     global(prior_se, "min", na.rm = TRUE)[1,1],
+                     global(prior_se, "max", na.rm = TRUE)[1,1],
+                     global(prior_se, "mean", na.rm = TRUE)[1,1]))
+  log_message(sprintf("    Likelihood SE range: %.2f - %.2f (mean: %.2f)",
+                     global(likelihood_se, "min", na.rm = TRUE)[1,1],
+                     global(likelihood_se, "max", na.rm = TRUE)[1,1],
+                     global(likelihood_se, "mean", na.rm = TRUE)[1,1]))
+  log_message(sprintf("    Weight factor range: %.2f - %.2f (mean: %.2f)",
+                     global(weight_factor_safe, "min", na.rm = TRUE)[1,1],
+                     global(weight_factor_safe, "max", na.rm = TRUE)[1,1],
+                     global(weight_factor_safe, "mean", na.rm = TRUE)[1,1]))
+  log_message(sprintf("    Adjusted likelihood SE range: %.2f - %.2f (mean: %.2f)",
+                     global(likelihood_se_adjusted, "min", na.rm = TRUE)[1,1],
+                     global(likelihood_se_adjusted, "max", na.rm = TRUE)[1,1],
+                     global(likelihood_se_adjusted, "mean", na.rm = TRUE)[1,1]))
 
   # === Bayesian posterior ===
   log_message("  Computing posterior...")
@@ -353,11 +394,28 @@ for (depth_str in names(priors)) {
                     (tau_prior + tau_field)
 
   # Posterior variance
-  posterior_var <- 1 / (tau_prior + tau_field)
+  tau_total <- tau_prior + tau_field
+  # Safeguard against division by zero
+  tau_total <- clamp(tau_total, lower = 0.001, upper = Inf)
+  posterior_var <- 1 / tau_total
+
+  # Ensure variance is reasonable
+  posterior_var <- clamp(posterior_var, lower = 0.001, upper = 1000)
   posterior_se <- sqrt(posterior_var)
+
+  # Check for NaN/Inf in posterior
+  if (any(is.na(values(posterior_se, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  ERROR: Posterior SE contains NA values - check input data", "ERROR")
+  }
+  if (any(is.infinite(values(posterior_se, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  ERROR: Posterior SE contains Inf values - check input data", "ERROR")
+  }
 
   # Conservative estimate (95% CI lower bound for VM0033)
   posterior_conservative <- posterior_mean - qnorm((1 + CONFIDENCE_LEVEL) / 2) * posterior_se
+
+  # Ensure non-negative carbon stocks
+  posterior_conservative <- clamp(posterior_conservative, lower = 0, upper = Inf)
 
   # === Information gain ===
   # How much did field data reduce uncertainty?
@@ -507,10 +565,18 @@ for (i in 1:nrow(summary_df)) {
               summary_df$posterior_se[i]))
 }
 
-overall_reduction <- mean(summary_df$uncertainty_reduction_pct)
+overall_reduction <- mean(summary_df$uncertainty_reduction_pct, na.rm = TRUE)
 cat(sprintf("\nOverall mean reduction: %.1f%%\n\n", overall_reduction))
 
-if (overall_reduction >= MIN_INFORMATION_GAIN_PCT) {
+# Handle NaN/NA values in comparison
+if (is.na(overall_reduction) || is.nan(overall_reduction)) {
+  cat("⚠ WARNING: Could not calculate uncertainty reduction\n")
+  cat("  Check input data quality (priors and likelihood SE)\n")
+  cat("  Possible issues:\n")
+  cat("    - Prior SE files may have incorrect units or values\n")
+  cat("    - Likelihood SE files may be missing or invalid\n")
+  cat("    - Sample density calculation may have failed\n\n")
+} else if (overall_reduction >= MIN_INFORMATION_GAIN_PCT) {
   cat(sprintf("✓ Information gain exceeds threshold (>%.0f%%)\n", MIN_INFORMATION_GAIN_PCT))
   cat("  Prior was informative - Bayesian update successful\n\n")
 } else {
