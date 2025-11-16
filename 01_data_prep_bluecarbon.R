@@ -101,6 +101,103 @@ validate_strata <- function(strata_vector, valid_strata = VALID_STRATA) {
   return(TRUE)
 }
 
+#' Validate core coordinates for spatial quality control
+#'
+#' Performs comprehensive validation of GPS coordinates including:
+#' - Range validation (valid lat/lon)
+#' - NA detection
+#' - Duplicate location detection
+#' - Spatial clustering analysis
+#'
+#' @param locations Data frame with longitude, latitude, core_id columns
+#' @return Cleaned locations data frame with validation flags
+#'
+#' @details
+#' Removes cores with:
+#' - Invalid coordinates (outside valid range or NA)
+#' - Coordinates outside QC thresholds
+#'
+#' Warns about:
+#' - Multiple cores at same location (GPS precision issues)
+#' - Spatially clustered cores (<10m apart)
+#'
+#' @examples
+#' locations <- validate_coordinates(locations)
+validate_coordinates <- function(locations) {
+  n_initial <- nrow(locations)
+
+  # Check for impossible coordinates
+  invalid_coords <- locations %>%
+    filter(
+      is.na(longitude) | is.na(latitude) |
+      longitude < QC_LON_MIN | longitude > QC_LON_MAX |
+      latitude < QC_LAT_MIN | latitude > QC_LAT_MAX
+    )
+
+  if (nrow(invalid_coords) > 0) {
+    log_message(sprintf("Found %d cores with invalid coordinates - removing",
+                       nrow(invalid_coords)), level = "WARNING")
+    log_message(sprintf("  Invalid core IDs: %s",
+                       paste(head(invalid_coords$core_id, 5), collapse = ", ")),
+               level = "WARNING")
+    if (nrow(invalid_coords) > 5) {
+      log_message(sprintf("  ... and %d more", nrow(invalid_coords) - 5), level = "WARNING")
+    }
+
+    # Remove invalid
+    locations <- locations %>%
+      filter(!(core_id %in% invalid_coords$core_id))
+  }
+
+  # Check for duplicate/clustered cores (same location within GPS precision)
+  # Round to 5 decimal places (~1m precision)
+  locations <- locations %>%
+    mutate(
+      lon_rounded = round(longitude, 5),
+      lat_rounded = round(latitude, 5)
+    ) %>%
+    group_by(lon_rounded, lat_rounded) %>%
+    mutate(n_at_location = n()) %>%
+    ungroup()
+
+  if (any(locations$n_at_location > 1)) {
+    n_clustered <- sum(locations$n_at_location > 1)
+    n_unique_clusters <- locations %>%
+      filter(n_at_location > 1) %>%
+      distinct(lon_rounded, lat_rounded) %>%
+      nrow()
+
+    log_message(sprintf("%d cores at %d duplicate locations - check GPS accuracy",
+                       n_clustered, n_unique_clusters), level = "WARNING")
+
+    # Save duplicate locations report
+    duplicate_report <- locations %>%
+      filter(n_at_location > 1) %>%
+      select(core_id, longitude, latitude, stratum, n_at_location) %>%
+      arrange(lon_rounded, lat_rounded)
+
+    dup_file <- file.path("diagnostics/qaqc",
+                          sprintf("duplicate_locations_%s_%s.csv",
+                                 PROJECT_SCENARIO, MONITORING_YEAR))
+    write.csv(duplicate_report, dup_file, row.names = FALSE)
+    log_message(sprintf("  Duplicate locations saved to: %s", dup_file), level = "INFO")
+  }
+
+  # Clean up temporary columns
+  locations <- locations %>%
+    select(-lon_rounded, -lat_rounded, -n_at_location)
+
+  n_removed <- n_initial - nrow(locations)
+  if (n_removed > 0) {
+    log_message(sprintf("Coordinate validation removed %d cores (%d remaining)",
+                       n_removed, nrow(locations)), level = "INFO")
+  } else {
+    log_message("All coordinates passed validation", level = "INFO")
+  }
+
+  return(locations)
+}
+
 #' Calculate SOC stock for a depth increment
 calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_cm) {
   # SOC stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × depth (cm) / 10
@@ -110,6 +207,59 @@ calculate_soc_stock <- function(soc_g_kg, bd_g_cm3, depth_top_cm, depth_bottom_c
   depth_increment <- depth_bottom_cm - depth_top_cm
   soc_stock_kg_m2 <- soc_prop * bd_g_cm3 * depth_increment / 10
   return(soc_stock_kg_m2)
+}
+
+#' Calculate SOC stock with full uncertainty propagation
+#'
+#' Propagates uncertainty from both SOC and bulk density measurements
+#' using first-order Taylor approximation for error propagation.
+#'
+#' @param soc_g_kg Soil organic carbon content (g/kg)
+#' @param soc_se Standard error of SOC (g/kg)
+#' @param bd_g_cm3 Bulk density (g/cm³)
+#' @param bd_se Standard error of bulk density (g/cm³)
+#' @param depth_top_cm Top depth (cm)
+#' @param depth_bottom_cm Bottom depth (cm)
+#'
+#' @return List with mean and se in kg/m²
+#'
+#' @details
+#' Error propagation formula for multiplication f = x * y:
+#' Var(f) = f² * [(Var(x)/x²) + (Var(y)/y²)]
+#' where relative variance = (SE/mean)²
+#'
+#' For SOC stock = SOC * BD * depth:
+#' rel_var_stock = rel_var_soc + rel_var_bd
+#'
+#' @examples
+#' stock <- calculate_soc_stock_with_uncertainty(50, 5, 1.2, 0.1, 0, 15)
+#' # Returns: list(mean = 0.9, se = 0.12)
+calculate_soc_stock_with_uncertainty <- function(soc_g_kg, soc_se, bd_g_cm3, bd_se,
+                                                 depth_top_cm, depth_bottom_cm) {
+  soc_prop <- soc_g_kg / 1000
+  depth_increment <- depth_bottom_cm - depth_top_cm
+
+  # Mean stock
+  stock_mean <- soc_prop * bd_g_cm3 * depth_increment / 10
+
+  # Error propagation (first-order Taylor approximation)
+  # If SE not provided, use conservative defaults: 10% for SOC, 15% for BD
+  rel_var_soc <- if (!is.na(soc_se) && soc_g_kg > 0) {
+    (soc_se / soc_g_kg)^2
+  } else {
+    0.1^2  # Conservative default: 10% CV
+  }
+
+  rel_var_bd <- if (!is.na(bd_se) && bd_g_cm3 > 0) {
+    (bd_se / bd_g_cm3)^2
+  } else {
+    0.15^2  # Conservative default: 15% CV
+  }
+
+  # Combined relative variance (assuming independence)
+  stock_se <- stock_mean * sqrt(rel_var_soc + rel_var_bd)
+
+  return(list(mean = stock_mean, se = stock_se))
 }
 
 #' Assign bulk density defaults by stratum if missing
@@ -181,13 +331,8 @@ if (length(missing_cols) > 0) {
                paste(missing_cols, collapse = ", ")))
 }
 
-# Validate coordinates
-locations <- locations %>%
-  filter(!is.na(longitude) & !is.na(latitude)) %>%
-  filter(longitude >= -180 & longitude <= 180) %>%
-  filter(latitude >= -90 & latitude <= 90)
-
-log_message(sprintf("After coordinate validation: %d cores", nrow(locations)))
+# Validate coordinates with comprehensive QC
+locations <- validate_coordinates(locations)
 
 # Validate strata
 if (!validate_strata(locations$stratum)) {

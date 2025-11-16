@@ -353,6 +353,43 @@ FIGURE_DPI <- 300
 TABLE_DIGITS <- 2  # Decimal places for tables
 
 # ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+#' Convert between carbon stock units
+#'
+#' @param value Numeric value to convert
+#' @param from Source unit (kg_m2, Mg_ha, g_kg, pct)
+#' @param to Target unit
+#' @return Converted value
+#' @examples
+#' convert_units(1, "kg_m2", "Mg_ha")  # Returns 10
+#' convert_units(10, "Mg_ha", "kg_m2") # Returns 1
+convert_units <- function(value, from, to) {
+  conversions <- list(
+    "kg_m2_to_Mg_ha" = 10,
+    "Mg_ha_to_kg_m2" = 0.1,
+    "g_kg_to_pct" = 0.1,
+    "pct_to_g_kg" = 10
+  )
+
+  key <- paste(from, "to", to, sep = "_")
+  if (key %in% names(conversions)) {
+    return(value * conversions[[key]])
+  } else {
+    stop(sprintf("Unknown conversion: %s to %s", from, to))
+  }
+}
+
+# ============================================================================
+# SESSION TRACKING
+# ============================================================================
+
+# Session tracking for reproducibility and unique output naming
+SESSION_START <- Sys.time()
+SESSION_ID <- format(SESSION_START, "%Y%m%d_%H%M%S")
+
+# ============================================================================
 # END OF CONFIGURATION
 # ============================================================================
 
@@ -368,5 +405,7 @@ if (interactive()) {
 ", PROJECT_SCENARIO))
   cat(sprintf("  Monitoring year: %d
 ", MONITORING_YEAR))
+  cat(sprintf("  Session ID: %s
+", SESSION_ID))
 }
 
