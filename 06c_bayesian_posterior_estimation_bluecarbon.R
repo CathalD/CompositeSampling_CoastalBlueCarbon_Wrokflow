@@ -206,6 +206,9 @@ template_raster <- priors[[1]]$mean
 grid_extent <- ext(template_raster)
 grid_res <- res(template_raster)[1]
 
+log_message(sprintf("  Template raster extent: %s", as.character(grid_extent)))
+log_message(sprintf("  Template raster CRS: EPSG:%d", PROCESSING_CRS))
+
 # Calculate kernel density of samples
 # Use bandwidth = 1000m (1km radius for local sample density)
 bandwidth <- 1000
@@ -213,12 +216,44 @@ bandwidth <- 1000
 # Get sample coordinates in template CRS
 sample_coords <- st_coordinates(samples_sf)
 
+log_message(sprintf("  Sample coordinates range:"))
+log_message(sprintf("    X: %.2f to %.2f", min(sample_coords[,1]), max(sample_coords[,1])))
+log_message(sprintf("    Y: %.2f to %.2f", min(sample_coords[,2]), max(sample_coords[,2])))
+
+# Check if samples overlap with template raster extent
+samples_bbox <- st_bbox(samples_sf)
+template_bbox <- st_bbox(template_raster)
+
+log_message("  Checking spatial overlap between samples and prior raster...")
+if (samples_bbox["xmin"] > template_bbox["xmax"] ||
+    samples_bbox["xmax"] < template_bbox["xmin"] ||
+    samples_bbox["ymin"] > template_bbox["ymax"] ||
+    samples_bbox["ymax"] < template_bbox["ymin"]) {
+
+  log_message("  ERROR: No spatial overlap between samples and prior raster!", "ERROR")
+  log_message(sprintf("    Samples extent: xmin=%.2f, xmax=%.2f, ymin=%.2f, ymax=%.2f",
+                     samples_bbox["xmin"], samples_bbox["xmax"],
+                     samples_bbox["ymin"], samples_bbox["ymax"]), "ERROR")
+  log_message(sprintf("    Prior extent: xmin=%.2f, xmax=%.2f, ymin=%.2f, ymax=%.2f",
+                     template_bbox["xmin"], template_bbox["xmax"],
+                     template_bbox["ymin"], template_bbox["ymax"]), "ERROR")
+  log_message("  Check that:", "ERROR")
+  log_message("    1. Prior raster was created for the correct study area", "ERROR")
+  log_message("    2. Sample CRS matches PROCESSING_CRS in config", "ERROR")
+  log_message("    3. Module 00C processed priors correctly", "ERROR")
+  stop("Cannot proceed: samples and prior have no spatial overlap")
+}
+
+log_message("  Samples and prior raster overlap - proceeding...")
+
 # Create sample density raster
 sample_density <- template_raster
 sample_density[] <- 0
 
 # For each pixel, count samples within bandwidth
-log_message(sprintf("Computing sample density (bandwidth = %d m)...", bandwidth))
+log_message(sprintf("  Computing sample density (bandwidth = %d m)...", bandwidth))
+
+n_samples_added <- 0
 
 # Simplified approach: for each sample, increment nearby pixels
 for (i in 1:nrow(sample_coords)) {
@@ -228,14 +263,38 @@ for (i in 1:nrow(sample_coords)) {
   # Rasterize buffer
   buffer_rast <- rasterize(vect(sample_buffer), template_raster, fun = "sum")
 
-  # Add to density
-  sample_density <- sample_density + buffer_rast
+  # Check if buffer overlaps with raster
+  if (!is.null(buffer_rast) && !all(is.na(values(buffer_rast, mat = FALSE)))) {
+    # Add to density
+    sample_density <- sample_density + buffer_rast
+    n_samples_added <- n_samples_added + 1
+  }
+}
+
+log_message(sprintf("    %d/%d samples contributed to density map", n_samples_added, nrow(samples_sf)))
+
+if (n_samples_added == 0) {
+  log_message("  ERROR: No samples fell within the prior raster extent!", "ERROR")
+  log_message("  This can happen if:", "ERROR")
+  log_message("    - Prior was created for different study area", "ERROR")
+  log_message("    - Samples are outside the prior coverage area", "ERROR")
+  stop("Cannot proceed: no samples within prior extent")
 }
 
 # Normalize by total samples
 sample_density <- sample_density / nrow(samples_sf)
 
-log_message("Sample density calculated")
+# Check for valid density values
+density_stats <- global(sample_density, c("min", "max", "mean"), na.rm = TRUE)
+log_message(sprintf("  Sample density: min=%.4f, max=%.4f, mean=%.4f",
+                   density_stats[1,1], density_stats[1,2], density_stats[1,3]))
+
+if (is.na(density_stats[1,3]) || density_stats[1,3] <= 0) {
+  log_message("  ERROR: Sample density calculation failed - all values are zero or NA", "ERROR")
+  stop("Cannot proceed: invalid sample density")
+}
+
+log_message("  Sample density calculated successfully")
 
 # Calculate weighting factor based on sample density
 # Options: sqrt_samples, linear, fixed
