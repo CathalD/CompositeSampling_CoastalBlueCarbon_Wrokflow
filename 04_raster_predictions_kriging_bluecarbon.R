@@ -317,6 +317,103 @@ fit_variogram_auto <- function(sp_data, formula, cutoff = NULL) {
   })
 }
 
+#' Test for spatial autocorrelation in residuals
+#'
+#' Uses Moran's I test to detect spatial autocorrelation in kriging residuals.
+#' Significant autocorrelation suggests the variogram model may need adjustment.
+#'
+#' @param residuals Vector of kriging residuals
+#' @param coords Coordinate matrix (x, y)
+#' @param k Number of nearest neighbors for spatial weights (default 5)
+#' @return Moran's I test result or NULL if test fails
+#'
+#' @details
+#' Moran's I ranges from -1 (perfect dispersion) to +1 (perfect clustering).
+#' Values near 0 indicate no spatial autocorrelation (desired for residuals).
+#'
+#' For kriging validation:
+#' - Non-significant Moran's I → Model adequately captures spatial structure
+#' - Significant positive I → Residuals still spatially correlated (underfitting)
+#' - Significant negative I → Over-smoothing (less common)
+#'
+#' Requires spdep package. Returns NULL gracefully if unavailable.
+#'
+#' Reference: Moran, P.A.P. (1950). Notes on continuous stochastic phenomena.
+#' Biometrika, 37(1/2), 17-23.
+#'
+#' @examples
+#' moran_test <- test_spatial_autocorrelation(residuals, coords)
+#' if (!is.null(moran_test) && moran_test$p.value < 0.05) {
+#'   # Residuals show significant spatial autocorrelation
+#' }
+test_spatial_autocorrelation <- function(residuals, coords, k = 5) {
+
+  # Check if spdep package is available
+  if (!requireNamespace("spdep", quietly = TRUE)) {
+    log_message("spdep package not available - skipping Moran's I test",
+               level = "WARNING")
+    log_message("Install with: install.packages('spdep')", level = "INFO")
+    return(NULL)
+  }
+
+  # Need at least 10 points for meaningful test
+  if (length(residuals) < 10) {
+    log_message("Too few points for Moran's I test (need >= 10)",
+               level = "INFO")
+    return(NULL)
+  }
+
+  tryCatch({
+    # Create spatial neighbors (k nearest neighbors)
+    k_actual <- min(k, floor(length(residuals) / 2))  # Ensure k is reasonable
+    nb <- spdep::knn2nb(spdep::knearneigh(coords, k = k_actual))
+
+    # Convert to spatial weights list
+    listw <- spdep::nb2listw(nb, style = "W", zero.policy = TRUE)
+
+    # Perform Moran's I test
+    moran_result <- spdep::moran.test(residuals, listw, zero.policy = TRUE)
+
+    # Interpret results
+    moran_i <- moran_result$estimate["Moran I statistic"]
+    p_value <- moran_result$p.value
+
+    if (p_value < 0.05) {
+      if (moran_i > 0) {
+        log_message(
+          sprintf("Significant positive spatial autocorrelation detected (I = %.3f, p = %.4f)",
+                 moran_i, p_value),
+          level = "WARNING"
+        )
+        log_message("  → Residuals still spatially correlated - variogram may need adjustment",
+                   level = "WARNING")
+      } else {
+        log_message(
+          sprintf("Significant negative spatial autocorrelation detected (I = %.3f, p = %.4f)",
+                 moran_i, p_value),
+          level = "WARNING"
+        )
+        log_message("  → Possible over-smoothing", level = "WARNING")
+      }
+    } else {
+      log_message(
+        sprintf("No significant spatial autocorrelation in residuals (I = %.3f, p = %.4f)",
+               moran_i, p_value),
+        level = "INFO"
+      )
+      log_message("  ✓ Variogram model adequately captures spatial structure",
+                 level = "INFO")
+    }
+
+    return(moran_result)
+
+  }, error = function(e) {
+    log_message(sprintf("Moran's I test failed: %s", e$message),
+               level = "WARNING")
+    return(NULL)
+  })
+}
+
 #' Perform cross-validation for kriging
 #' @param sp_data Spatial data
 #' @param formula Formula for kriging
@@ -427,13 +524,19 @@ crossvalidate_kriging <- function(sp_data, formula, vgm_model, use_spatial_cv = 
     ss_tot <- sum((cv_result$observed - mean(cv_result$observed, na.rm = TRUE))^2, na.rm = TRUE)
     r2 <- 1 - (ss_res / ss_tot)
 
+    # Test for spatial autocorrelation in residuals
+    log_message("    Testing spatial autocorrelation in residuals...", "INFO")
+    coords <- st_coordinates(cv_result)
+    moran_test <- test_spatial_autocorrelation(cv_result$residual, coords, k = 5)
+
     return(list(
       rmse = rmse,
       mae = mae,
       me = me,
       r2 = r2,
       method = "kfold_cv",
-      cv_data = cv_result
+      cv_data = cv_result,
+      moran_test = moran_test
     ))
 
   }, error = function(e) {

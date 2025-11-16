@@ -59,6 +59,118 @@ dir.create("outputs/models/rf", recursive = TRUE, showWarnings = FALSE)
 dir.create("diagnostics/crossvalidation", recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+#' Memory-safe raster mosaicking for large study areas
+#'
+#' Safely combines multiple rasters with automatic chunking for large datasets.
+#' Prevents memory crashes by detecting large rasters and processing in tiles.
+#'
+#' @param raster_list List of SpatRaster objects to mosaic
+#' @param max_cells Maximum cells before triggering chunked processing (default 10M)
+#' @param fun Mosaic function ("mean", "max", "min", etc.)
+#' @return Mosaicked SpatRaster
+#'
+#' @details
+#' For large study areas (>10M cells), standard mosaic() can exhaust memory.
+#' This function detects large rasters and switches to memory-safe tile-based
+#' processing with merge(), which handles memory more efficiently.
+#'
+#' @examples
+#' rasters <- list(r1, r2, r3)
+#' combined <- safe_mosaic(rasters)
+safe_mosaic <- function(raster_list, max_cells = 1e7, fun = "mean") {
+
+  if (length(raster_list) == 0) {
+    stop("Empty raster list provided to safe_mosaic")
+  }
+
+  if (length(raster_list) == 1) {
+    return(raster_list[[1]])
+  }
+
+  # Check total cell count
+  total_cells <- ncell(raster_list[[1]])
+
+  if (total_cells > max_cells) {
+    log_message(sprintf("Large raster detected (%d cells) - using chunked processing",
+                       total_cells), level = "INFO")
+
+    # Memory-safe chunked processing using merge
+    result <- raster_list[[1]]
+
+    for (i in 2:length(raster_list)) {
+      log_message(sprintf("Merging tile %d/%d", i, length(raster_list)),
+                 level = "INFO")
+
+      result <- merge(result, raster_list[[i]])
+
+      # Force garbage collection after each merge
+      gc()
+    }
+
+    log_message("Chunked mosaic complete", level = "INFO")
+    return(result)
+
+  } else {
+    # Standard mosaic for smaller rasters
+    return(do.call(mosaic, c(raster_list, list(fun = fun))))
+  }
+}
+
+#' Calculate comprehensive cross-validation metrics
+#'
+#' Computes multiple performance metrics for model validation including
+#' RMSE, MAE, R², bias, and relative RMSE.
+#'
+#' @param observed Vector of observed values
+#' @param predicted Vector of predicted values
+#' @return Data frame with multiple metrics
+#'
+#' @details
+#' Metrics calculated:
+#' - RMSE: Root Mean Square Error (same units as data)
+#' - MAE: Mean Absolute Error (robust to outliers)
+#' - R²: Coefficient of determination (0-1, higher is better)
+#' - Bias: Mean prediction error (signed)
+#' - Relative RMSE: RMSE as percentage of observed mean
+#'
+#' For VM0033 compliance, target RelRMSE < 20%
+#'
+#' @examples
+#' metrics <- calculate_cv_metrics(obs, pred)
+calculate_cv_metrics <- function(observed, predicted) {
+
+  # Remove NA pairs
+  valid_idx <- !is.na(observed) & !is.na(predicted)
+  obs <- observed[valid_idx]
+  pred <- predicted[valid_idx]
+
+  if (length(obs) < 2) {
+    return(data.frame(
+      rmse = NA, mae = NA, r2 = NA, bias = NA, rel_rmse = NA
+    ))
+  }
+
+  metrics <- data.frame(
+    rmse = sqrt(mean((obs - pred)^2)),
+    mae = mean(abs(obs - pred)),
+    r2 = cor(obs, pred)^2,
+    bias = mean(pred - obs),
+    rel_rmse = sqrt(mean((obs - pred)^2)) / mean(obs) * 100
+  )
+
+  log_message(
+    sprintf("CV Metrics: RMSE=%.2f, MAE=%.2f, R²=%.3f, Bias=%.2f, RelRMSE=%.1f%%",
+           metrics$rmse, metrics$mae, metrics$r2, metrics$bias, metrics$rel_rmse),
+    level = "INFO"
+  )
+
+  return(metrics)
+}
+
+# ============================================================================
 # LOAD HARMONIZED DATA
 # ============================================================================
 
@@ -291,9 +403,9 @@ if (!dir.exists(gee_strata_dir)) {
       stratum_raster <- stratum_layers[[1]]
 
     } else {
-      # Multiple strata - mosaic with max function
+      # Multiple strata - mosaic with max function (memory-safe)
       # Higher codes take precedence where overlap occurs
-      stratum_raster <- do.call(mosaic, c(stratum_layers, list(fun = "max")))
+      stratum_raster <- safe_mosaic(stratum_layers, max_cells = 1e7, fun = "max")
     }
 
     # Convert to categorical factor
@@ -622,25 +734,51 @@ for (depth in STANDARD_DEPTHS) {
   # ========================================================================
   # SPATIAL CROSS-VALIDATION
   # ========================================================================
-  
-  # Check if we have enough data for CV
-  if (nrow(depth_data) < (CV_FOLDS * 3)) {
-    log_message(sprintf("  Skipping CV (n=%d too small for %d folds)", 
-                       nrow(depth_data), CV_FOLDS), "WARNING")
+
+  # Adaptive CV strategy based on sample size
+  # Small samples (<30): Use Leave-One-Out CV (LOOCV)
+  # Medium samples (30-90): Use reduced folds (min 3)
+  # Large samples (>90): Use standard k-fold CV
+
+  n_samples <- nrow(depth_data)
+  use_loocv <- FALSE
+  actual_cv_folds <- CV_FOLDS
+
+  if (n_samples < 30) {
+    use_loocv <- TRUE
+    actual_cv_folds <- n_samples  # LOOCV = n folds
+    log_message(sprintf("  Small sample size (n=%d) - using LOOCV", n_samples), "INFO")
+  } else if (n_samples < (CV_FOLDS * 3)) {
+    actual_cv_folds <- max(3, floor(n_samples / 3))
+    log_message(sprintf("  Medium sample size (n=%d) - using %d folds",
+                       n_samples, actual_cv_folds), "INFO")
+  } else {
+    log_message(sprintf("  Performing %d-fold spatial cross-validation (n=%d)...",
+                       CV_FOLDS, n_samples), "INFO")
+  }
+
+  # Check if we have enough data for ANY CV
+  if (n_samples < 5) {
+    log_message(sprintf("  Skipping CV (n=%d too small)", n_samples), "WARNING")
     cv_rmse <- NA
     cv_mae <- NA
     cv_me <- NA
     cv_r2 <- NA
   } else {
-    log_message("  Performing spatial cross-validation...")
-    
-    # Create spatial folds
-    spatial_folds <- tryCatch({
-      spatial_cv_stratified(depth_data, n_folds = CV_FOLDS)
-    }, error = function(e) {
-      log_message(sprintf("  Fold creation failed: %s", e$message), "ERROR")
-      rep(1:min(CV_FOLDS, nrow(depth_data)), length.out = nrow(depth_data))
-    })
+    # Create folds (spatial or LOOCV)
+    if (use_loocv) {
+      # LOOCV: Each sample is a fold
+      spatial_folds <- 1:n_samples
+      log_message("  Using Leave-One-Out Cross-Validation", "INFO")
+    } else {
+      # Spatial folds
+      spatial_folds <- tryCatch({
+        spatial_cv_stratified(depth_data, n_folds = actual_cv_folds)
+      }, error = function(e) {
+        log_message(sprintf("  Fold creation failed: %s", e$message), "WARNING")
+        rep(1:min(actual_cv_folds, n_samples), length.out = n_samples)
+      })
+    }
     
     n_unique_folds <- length(unique(spatial_folds[!is.na(spatial_folds)]))
     log_message(sprintf("  Created %d folds", n_unique_folds))
@@ -681,30 +819,33 @@ for (depth in STANDARD_DEPTHS) {
         cv_predictions[test_idx] <- predict(rf_fold, predictors[test_idx, ])
       }
       
-      # Calculate CV metrics
+      # Calculate comprehensive CV metrics
       predicted_idx <- which(cv_predictions > 0)
-      
+
       if (length(predicted_idx) < 5) {
         log_message("  CV failed (too few predictions)", "WARNING")
         cv_rmse <- NA
         cv_mae <- NA
         cv_me <- NA
         cv_r2 <- NA
+        cv_rel_rmse <- NA
       } else {
-        cv_residuals <- response[predicted_idx] - cv_predictions[predicted_idx]
-        cv_rmse <- sqrt(mean(cv_residuals^2, na.rm = TRUE))
-        cv_mae <- mean(abs(cv_residuals), na.rm = TRUE)
-        cv_me <- mean(cv_residuals, na.rm = TRUE)
-        cv_r2 <- 1 - sum(cv_residuals^2, na.rm = TRUE) / 
-                 sum((response[predicted_idx] - mean(response[predicted_idx], na.rm = TRUE))^2, na.rm = TRUE)
-        
-        log_message(sprintf("  CV: RMSE=%.2f, R²=%.3f, MAE=%.2f",
-                           cv_rmse, cv_r2, cv_mae))
+        # Use comprehensive metrics function
+        cv_metrics <- calculate_cv_metrics(
+          observed = response[predicted_idx],
+          predicted = cv_predictions[predicted_idx]
+        )
+
+        cv_rmse <- cv_metrics$rmse
+        cv_mae <- cv_metrics$mae
+        cv_me <- cv_metrics$bias  # Mean error = bias
+        cv_r2 <- cv_metrics$r2
+        cv_rel_rmse <- cv_metrics$rel_rmse
       }
     }
   }
   
-  # Store CV results
+  # Store CV results (including new relative RMSE metric)
   cv_results_all <- rbind(cv_results_all, data.frame(
     depth_cm = depth,
     n_samples = nrow(depth_data),
@@ -714,6 +855,7 @@ for (depth in STANDARD_DEPTHS) {
     cv_mae = cv_mae,
     cv_me = cv_me,
     cv_r2 = cv_r2,
+    cv_rel_rmse = if(exists("cv_rel_rmse")) cv_rel_rmse else NA,
     oob_rmse = sqrt(rf_model$mse[RF_NTREE]),
     oob_r2 = oob_r2
   ))

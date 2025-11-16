@@ -57,6 +57,217 @@ if (!dir.exists(plot_dir)) {
 }
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+#' Detect potential outliers using Isolation Forest
+#'
+#' Uses the isotree package to identify statistical outliers in SOC,
+#' bulk density, and depth measurements. Outliers are flagged but not
+#' removed - manual review is recommended.
+#'
+#' @param cores_data Data frame with soc_g_kg, bulk_density_g_cm3, depth_cm
+#' @param contamination Expected proportion of outliers (default 0.05 = 5%)
+#' @return Data with outlier_flag and outlier_score columns added
+#'
+#' @details
+#' Isolation Forest (Liu et al. 2008) is an ensemble method that isolates
+#' anomalies by randomly partitioning the feature space. Points that are
+#' easier to isolate (require fewer splits) are more likely to be outliers.
+#'
+#' Advantages:
+#' - Works well with mixed distributions
+#' - Handles multiple variables simultaneously
+#' - No assumptions about data distribution
+#' - Computationally efficient
+#'
+#' Reference: Liu, F.T., Ting, K.M., Zhou, Z.H. (2008).
+#' Isolation Forest. ICDM '08.
+#'
+#' @examples
+#' cores_with_flags <- detect_outliers(cores)
+#' outliers <- cores_with_flags %>% filter(outlier_flag)
+detect_outliers <- function(cores_data, contamination = 0.05) {
+
+  # Check if isotree package is available
+  if (!requireNamespace("isotree", quietly = TRUE)) {
+    log_message("isotree package not available - skipping outlier detection",
+               level = "WARNING")
+    log_message("Install with: install.packages('isotree')", level = "INFO")
+
+    # Return data with dummy flags
+    cores_data$outlier_flag <- FALSE
+    cores_data$outlier_score <- NA_real_
+    return(cores_data)
+  }
+
+  # Select numeric columns for outlier detection
+  numeric_cols <- c("soc_g_kg", "bulk_density_g_cm3", "depth_cm")
+
+  # Check columns exist
+  missing_cols <- setdiff(numeric_cols, names(cores_data))
+  if (length(missing_cols) > 0) {
+    log_message(sprintf("Missing columns for outlier detection: %s",
+                       paste(missing_cols, collapse = ", ")),
+               level = "WARNING")
+    cores_data$outlier_flag <- FALSE
+    cores_data$outlier_score <- NA_real_
+    return(cores_data)
+  }
+
+  # Remove rows with NA in key columns
+  complete_data <- cores_data[complete.cases(cores_data[, numeric_cols]), ]
+
+  if (nrow(complete_data) < 10) {
+    log_message("Too few complete cases for outlier detection (need >= 10)",
+               level = "WARNING")
+    cores_data$outlier_flag <- FALSE
+    cores_data$outlier_score <- NA_real_
+    return(cores_data)
+  }
+
+  # Fit Isolation Forest
+  tryCatch({
+    iso_model <- isotree::isolation.forest(
+      complete_data[, numeric_cols],
+      ntrees = 100,
+      sample_size = min(256, nrow(complete_data)),
+      ndim = length(numeric_cols),
+      seed = 42
+    )
+
+    # Predict anomaly scores (higher = more anomalous)
+    scores <- predict(iso_model, complete_data[, numeric_cols], type = "score")
+
+    # Determine threshold based on contamination rate
+    threshold <- quantile(scores, 1 - contamination, na.rm = TRUE)
+    outliers <- scores > threshold
+
+    # Add scores and flags to complete data
+    complete_data$outlier_score <- scores
+    complete_data$outlier_flag <- outliers
+
+    # Merge back to original data
+    cores_data$outlier_score <- NA_real_
+    cores_data$outlier_flag <- FALSE
+
+    match_idx <- match(
+      paste(complete_data$core_id, complete_data$depth_cm),
+      paste(cores_data$core_id, cores_data$depth_cm)
+    )
+
+    cores_data$outlier_score[match_idx] <- complete_data$outlier_score
+    cores_data$outlier_flag[match_idx] <- complete_data$outlier_flag
+
+    n_outliers <- sum(outliers)
+
+    if (n_outliers > 0) {
+      log_message(
+        sprintf("Detected %d potential outliers (%.1f%% of complete cases)",
+               n_outliers, 100 * n_outliers / nrow(complete_data)),
+        level = "WARNING"
+      )
+
+      # Save outlier report
+      outlier_report <- cores_data %>%
+        filter(outlier_flag) %>%
+        select(core_id, stratum, depth_cm, soc_g_kg, bulk_density_g_cm3,
+               outlier_score) %>%
+        arrange(desc(outlier_score))
+
+      outlier_file <- file.path("diagnostics/qaqc",
+                                sprintf("outliers_%s_%s.csv",
+                                       PROJECT_SCENARIO, MONITORING_YEAR))
+
+      if (!dir.exists("diagnostics/qaqc")) {
+        dir.create("diagnostics/qaqc", recursive = TRUE)
+      }
+
+      write.csv(outlier_report, outlier_file, row.names = FALSE)
+      log_message(sprintf("Outlier report saved to: %s", outlier_file),
+                 level = "INFO")
+    } else {
+      log_message("No outliers detected", level = "INFO")
+    }
+
+    return(cores_data)
+
+  }, error = function(e) {
+    log_message(sprintf("Outlier detection failed: %s", e$message),
+               level = "WARNING")
+    cores_data$outlier_flag <- FALSE
+    cores_data$outlier_score <- NA_real_
+    return(cores_data)
+  })
+}
+
+#' Check depth profile monotonicity
+#'
+#' Checks if SOC decreases monotonically with depth (typical pattern).
+#' Non-monotonic profiles may indicate:
+#' - Sampling/measurement errors
+#' - Stratified soil layers
+#' - Buried organic matter
+#' - Natural variability
+#'
+#' @param core_data Data frame with core_id, depth_cm, soc_g_kg
+#' @return Data frame of cores with non-monotonic profiles
+#'
+#' @details
+#' Identifies cores where SOC increases with depth (non-monotonic).
+#' This is flagged for review but may be legitimate in some ecosystems
+#' (e.g., buried peat layers, stratified deposits).
+#'
+#' @examples
+#' non_monotonic <- check_monotonicity(cores)
+#' if (nrow(non_monotonic) > 0) {
+#'   # Review these cores
+#' }
+check_monotonicity <- function(core_data) {
+
+  non_monotonic <- core_data %>%
+    group_by(core_id) %>%
+    arrange(core_id, depth_cm) %>%
+    mutate(
+      soc_change = c(NA, diff(soc_g_kg)),
+      depth_interval = c(NA, diff(depth_cm))
+    ) %>%
+    # Flag where SOC increases significantly with depth
+    filter(soc_change > 0 & !is.na(soc_change)) %>%
+    ungroup()
+
+  if (nrow(non_monotonic) > 0) {
+    n_cores_affected <- n_distinct(non_monotonic$core_id)
+    log_message(
+      sprintf("%d depth intervals in %d cores show non-monotonic SOC profiles",
+             nrow(non_monotonic), n_cores_affected),
+      level = "INFO"
+    )
+
+    # Save non-monotonic report
+    monotonic_report <- non_monotonic %>%
+      select(core_id, stratum, depth_cm, soc_g_kg, soc_change, depth_interval) %>%
+      arrange(core_id, depth_cm)
+
+    monotonic_file <- file.path("diagnostics/qaqc",
+                                sprintf("non_monotonic_profiles_%s_%s.csv",
+                                       PROJECT_SCENARIO, MONITORING_YEAR))
+
+    if (!dir.exists("diagnostics/qaqc")) {
+      dir.create("diagnostics/qaqc", recursive = TRUE)
+    }
+
+    write.csv(monotonic_report, monotonic_file, row.names = FALSE)
+    log_message(sprintf("Non-monotonic profiles saved to: %s", monotonic_file),
+               level = "INFO")
+  } else {
+    log_message("All profiles are monotonically decreasing", level = "INFO")
+  }
+
+  return(non_monotonic)
+}
+
+# ============================================================================
 # LOAD DATA
 # ============================================================================
 
@@ -107,6 +318,31 @@ cores_clean <- cores %>%
 log_message(sprintf("After QA filter: %d samples from %d cores",
                     nrow(cores_clean),
                     n_distinct(cores_clean$core_id)))
+
+# ============================================================================
+# DATA QUALITY CHECKS
+# ============================================================================
+
+log_message("Running data quality checks...")
+
+# Outlier detection
+cores_clean <- detect_outliers(cores_clean, contamination = 0.05)
+
+# Monotonicity check
+non_monotonic_cores <- check_monotonicity(cores_clean)
+
+# Save quality check results
+qc_summary <- list(
+  n_outliers = sum(cores_clean$outlier_flag, na.rm = TRUE),
+  n_non_monotonic_intervals = nrow(non_monotonic_cores),
+  n_non_monotonic_cores = n_distinct(non_monotonic_cores$core_id),
+  outlier_threshold = quantile(cores_clean$outlier_score, 0.95, na.rm = TRUE),
+  timestamp = Sys.time()
+)
+
+saveRDS(qc_summary, "data_processed/eda_qc_summary.rds")
+
+log_message("Data quality checks complete")
 
 # ============================================================================
 # SUMMARY STATISTICS
