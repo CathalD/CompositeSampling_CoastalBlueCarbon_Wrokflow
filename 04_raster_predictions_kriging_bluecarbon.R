@@ -613,7 +613,7 @@ plot_variogram <- function(vgm_emp, vgm_model, stratum_name, depth_cm) {
     plot(vgm_emp, vgm_model,
          main = sprintf("Carbon Stock Variogram: %s at %.0f cm", stratum_name, depth_cm),
          xlab = "Distance (m)",
-         ylab = "Semivariance (kg C/m²)²")
+         ylab = "Semivariance (kg/m²)²")
     
     dev.off()
     
@@ -1076,54 +1076,27 @@ for (depth in STANDARD_DEPTHS) {
       aoa_pct_in = aoa_pct
     )
     
-    log_message(sprintf("  Mean prediction: %.2f ± %.2f g/kg", 
+    log_message(sprintf("  Mean prediction: %.2f ± %.2f kg/m²",
                        kriging_results[[result_key]]$mean_prediction,
                        kriging_results[[result_key]]$sd_prediction))
   }
 }
 
 # ============================================================================
-# VM0033 LAYER AGGREGATION: CONCENTRATION TO STOCK
+# VM0033 LAYER AGGREGATION: CARBON STOCK SUMMARIES
 # ============================================================================
 
 log_message("\n=== VM0033 Layer Aggregation ===")
+log_message("NOTE: Carbon stocks already calculated in Module 03 (kg/m² per depth interval)")
+log_message("      This section aggregates layers and converts to VM0033 reporting units (Mg C/ha)")
 
 # Create output directory for stocks
 dir.create("outputs/predictions/stocks", recursive = TRUE, showWarnings = FALSE)
-
-# Load bulk density data (check multiple possible sources)
-bd_data <- NULL
-
-# Try to load bulk density from Module 01
-if (file.exists("data_processed/cores_clean_bluecarbon.rds")) {
-  cores_all <- readRDS("data_processed/cores_clean_bluecarbon.rds")
-  if ("bulk_density" %in% names(cores_all) || "bd" %in% names(cores_all)) {
-    bd_field <- ifelse("bulk_density" %in% names(cores_all), "bulk_density", "bd")
-    bd_data <- cores_all %>%
-      filter(!is.na(!!sym(bd_field))) %>%
-      group_by(stratum) %>%
-      summarise(mean_bd = mean(!!sym(bd_field), na.rm = TRUE), .groups = "drop")
-    log_message(sprintf("Loaded bulk density data from cores (n=%d strata)", nrow(bd_data)))
-  }
-}
-
-# Default BD values if no data available (typical blue carbon values)
-# From literature: mangroves ~0.4-0.6, salt marshes ~0.3-0.8 g/cm³
-default_bd <- 0.5  # g/cm³ - conservative mid-range estimate
 
 # Process each stratum
 for (stratum_name in unique(cores_standard$stratum)) {
 
   log_message(sprintf("\nAggregating stocks for: %s", stratum_name))
-
-  # Get BD for this stratum
-  if (!is.null(bd_data) && stratum_name %in% bd_data$stratum) {
-    bd_value <- bd_data$mean_bd[bd_data$stratum == stratum_name]
-    log_message(sprintf("  Using measured BD: %.3f g/cm³", bd_value))
-  } else {
-    bd_value <- default_bd
-    log_message(sprintf("  Using default BD: %.3f g/cm³ (no data available)", bd_value))
-  }
 
   # Initialize stack rasters for this stratum
   stock_layers <- list()
@@ -1283,7 +1256,7 @@ if (nrow(cv_results_all) > 0) {
       title = "Kriging Cross-Validation RMSE",
       subtitle = "By stratum and depth (carbon stock predictions)",
       x = "Depth (cm)",
-      y = "CV RMSE (kg C/m²)",
+      y = "CV RMSE (kg/m²)",
       fill = "Stratum"
     ) +
     theme_minimal() +
@@ -1363,8 +1336,8 @@ if (nrow(cv_results_all) > 0) {
         labs(
           title = "Kriging Method Comparison",
           subtitle = "Ordinary vs Simple Kriging CV RMSE",
-          x = "Ordinary Kriging RMSE (g/kg)",
-          y = "Simple Kriging RMSE (g/kg)",
+          x = "Ordinary Kriging RMSE (kg/m²)",
+          y = "Simple Kriging RMSE (kg/m²)",
           color = "Stratum",
           caption = "Points below line indicate Simple Kriging performs better"
         ) +

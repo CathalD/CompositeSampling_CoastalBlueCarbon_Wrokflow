@@ -442,10 +442,15 @@ predict_at_standard_depths <- function(core_data, standard_depths,
     }
 
     # Calculate carbon stock for this VM0033 interval
-    # Stock (kg/m²) = SOC (g/kg) / 1000 × BD (g/cm³) × thickness (cm) / 10
-    result$carbon_stock_kg_m2[i] <- (result$soc_harmonized[i] / 1000) *
+    # Stock (kg/m²) = SOC (g/kg) × BD (g/cm³) × thickness (cm) / 1000
+    #
+    # Dimensional analysis:
+    # (g C / kg soil) × (g soil / cm³) × cm / 1000 = kg C / m²
+    # Proof: g/kg × g/cm³ × cm = g²/(kg·cm²)
+    #        For 1 m² = 10,000 cm²: g²/(kg·cm²) × 10,000/1000 = kg/m²
+    result$carbon_stock_kg_m2[i] <- result$soc_harmonized[i] *
                                      result$bd_harmonized[i] *
-                                     thickness_cm / 10
+                                     thickness_cm / 1000
   }
 
   # Add metadata
