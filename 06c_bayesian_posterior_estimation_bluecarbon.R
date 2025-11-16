@@ -14,7 +14,7 @@
 #
 #   Precision-weighted average:
 #   τ_prior = 1 / σ²_prior
-#   τ_field = 1 / σ²_field (adjusted by sample density)
+#   τ_field = 1 / σ²_field
 #
 #   μ_posterior = (τ_prior × μ_prior + τ_field × μ_field) / (τ_prior + τ_field)
 #   σ²_posterior = 1 / (τ_prior + τ_field)
@@ -87,7 +87,7 @@ dir.create("outputs/predictions/posterior", recursive = TRUE, showWarnings = FAL
 dir.create("diagnostics/bayesian", recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
-# LOAD FIELD DATA (for sample density calculation)
+# LOAD FIELD DATA (for reference and logging)
 # ============================================================================
 
 log_message("\nLoading field sample locations...")
@@ -197,137 +197,18 @@ if (length(priors) == 0) {
 }
 
 # ============================================================================
-# CALCULATE SAMPLE DENSITY
+# SETUP COMPLETE - READY FOR BAYESIAN UPDATE
 # ============================================================================
 
-log_message("\nCalculating sample density for precision weighting...")
+log_message("\nPreparing for Bayesian posterior estimation...")
+log_message("  Prior source: GEE SoilGrids + Sothe et al. (if available)")
+log_message("  Likelihood source: RF/Kriging spatial predictions")
+log_message("  Method: Precision-weighted Bayesian update")
+log_message(sprintf("  Sample locations: %d", nrow(sample_locations)))
 
-# Use first prior raster as template
-template_raster <- priors[[1]]$mean
-
-# Create raster grid
-grid_extent <- ext(template_raster)
-grid_res <- res(template_raster)[1]
-
-log_message(sprintf("  Template raster extent: %s", as.character(grid_extent)))
-log_message(sprintf("  Template raster CRS: EPSG:%d", PROCESSING_CRS))
-
-# Calculate kernel density of samples
-# Use bandwidth = 1000m (1km radius for local sample density)
-bandwidth <- 1000
-
-# Get sample coordinates in template CRS
-sample_coords <- st_coordinates(samples_sf)
-
-log_message(sprintf("  Sample coordinates range:"))
-log_message(sprintf("    X: %.2f to %.2f", min(sample_coords[,1]), max(sample_coords[,1])))
-log_message(sprintf("    Y: %.2f to %.2f", min(sample_coords[,2]), max(sample_coords[,2])))
-
-# Check if samples overlap with template raster extent
-samples_bbox <- st_bbox(samples_sf)
-template_bbox <- st_bbox(template_raster)
-
-log_message("  Checking spatial overlap between samples and prior raster...")
-if (samples_bbox["xmin"] > template_bbox["xmax"] ||
-    samples_bbox["xmax"] < template_bbox["xmin"] ||
-    samples_bbox["ymin"] > template_bbox["ymax"] ||
-    samples_bbox["ymax"] < template_bbox["ymin"]) {
-
-  log_message("  ERROR: No spatial overlap between samples and prior raster!", "ERROR")
-  log_message(sprintf("    Samples extent: xmin=%.2f, xmax=%.2f, ymin=%.2f, ymax=%.2f",
-                     samples_bbox["xmin"], samples_bbox["xmax"],
-                     samples_bbox["ymin"], samples_bbox["ymax"]), "ERROR")
-  log_message(sprintf("    Prior extent: xmin=%.2f, xmax=%.2f, ymin=%.2f, ymax=%.2f",
-                     template_bbox["xmin"], template_bbox["xmax"],
-                     template_bbox["ymin"], template_bbox["ymax"]), "ERROR")
-  log_message("  Check that:", "ERROR")
-  log_message("    1. Prior raster was created for the correct study area", "ERROR")
-  log_message("    2. Sample CRS matches PROCESSING_CRS in config", "ERROR")
-  log_message("    3. Module 00C processed priors correctly", "ERROR")
-  stop("Cannot proceed: samples and prior have no spatial overlap")
-}
-
-log_message("  Samples and prior raster overlap - proceeding...")
-
-# Create sample density raster
-sample_density <- template_raster
-sample_density[] <- 0
-
-# For each pixel, count samples within bandwidth
-log_message(sprintf("  Computing sample density (bandwidth = %d m)...", bandwidth))
-
-n_samples_added <- 0
-
-# Simplified approach: for each sample, increment nearby pixels
-for (i in 1:nrow(sample_coords)) {
-  # Create buffer around sample
-  sample_buffer <- st_buffer(samples_sf[i, ], dist = bandwidth)
-
-  # Rasterize buffer - creates 1 where buffer exists, NA elsewhere
-  buffer_rast <- rasterize(vect(sample_buffer), template_raster, field = 1, background = NA)
-
-  # Check if buffer overlaps with raster
-  if (!is.null(buffer_rast) && !all(is.na(values(buffer_rast, mat = FALSE)))) {
-    # Add to density using NA-safe addition
-    # Where buffer_rast is 1, add 1 to sample_density
-    # Where buffer_rast is NA, keep sample_density unchanged
-    sample_density <- ifel(is.na(buffer_rast), sample_density, sample_density + 1)
-    n_samples_added <- n_samples_added + 1
-  }
-}
-
-log_message(sprintf("    %d/%d samples contributed to density map", n_samples_added, nrow(samples_sf)))
-
-if (n_samples_added == 0) {
-  log_message("  ERROR: No samples fell within the prior raster extent!", "ERROR")
-  log_message("  This can happen if:", "ERROR")
-  log_message("    - Prior was created for different study area", "ERROR")
-  log_message("    - Samples are outside the prior coverage area", "ERROR")
-  stop("Cannot proceed: no samples within prior extent")
-}
-
-# Normalize by total samples to get relative density (0 to 1 scale)
-# Areas with more sample coverage will have higher density values
-sample_density <- sample_density / n_samples_added
-
-# Check for valid density values
-density_stats <- global(sample_density, c("min", "max", "mean"), na.rm = TRUE)
-log_message(sprintf("  Sample density: min=%.4f, max=%.4f, mean=%.4f",
-                   density_stats[1,1], density_stats[1,2], density_stats[1,3]))
-
-if (is.na(density_stats[1,3]) || density_stats[1,3] <= 0) {
-  log_message("  ERROR: Sample density calculation failed - all values are zero or NA", "ERROR")
-  stop("Cannot proceed: invalid sample density")
-}
-
-log_message("  Sample density calculated successfully")
-
-# Calculate weighting factor based on sample density
-# Options: sqrt_samples, linear, fixed
-if (BAYESIAN_WEIGHT_METHOD == "sqrt_samples") {
-  # Square root of relative density
-  mean_density <- global(sample_density, "mean", na.rm = TRUE)[1, 1]
-  weight_factor <- sqrt(sample_density / mean_density)
-
-  log_message("Using sqrt-sample weighting")
-
-} else if (BAYESIAN_WEIGHT_METHOD == "linear") {
-  # Linear weighting
-  mean_density <- global(sample_density, "mean", na.rm = TRUE)[1, 1]
-  weight_factor <- sample_density / mean_density
-
-  log_message("Using linear weighting")
-
-} else {
-  # Fixed weight
-  weight_factor <- template_raster
-  weight_factor[] <- BAYESIAN_FIXED_WEIGHT
-
-  log_message(sprintf("Using fixed weight: %.2f", BAYESIAN_FIXED_WEIGHT))
-}
-
-# Constrain weights to reasonable range [0.1, 2.0]
-weight_factor <- clamp(weight_factor, lower = 0.1, upper = 2.0)
+# Note: We use RF/Kriging SE directly as likelihood uncertainty
+# This already reflects model confidence based on cross-validation
+# No additional sample density weighting needed - keeps it simple and robust
 
 # ============================================================================
 # BAYESIAN UPDATE FOR EACH DEPTH
@@ -466,21 +347,15 @@ for (depth_str in names(priors)) {
     next
   }
 
-  # === Adjust field precision by sample density ===
-  log_message("  Adjusting field precision by sample density...")
-
-  # Higher sample density → lower SE (higher precision)
-  # Add safeguard: prevent division by very small weight factors
-  weight_factor_safe <- clamp(weight_factor, lower = 0.1, upper = 2.0)
-  likelihood_se_adjusted <- likelihood_se / weight_factor_safe
-
   # === Calculate precisions (inverse variance) ===
   # Add safeguards to prevent Inf/NaN
+  log_message("  Computing Bayesian precisions...")
+
   prior_var <- prior_se^2
   prior_var <- clamp(prior_var, lower = 0.001, upper = 1000)  # Prevent extreme values
   tau_prior <- 1 / prior_var
 
-  field_var <- likelihood_se_adjusted^2
+  field_var <- likelihood_se^2
   field_var <- clamp(field_var, lower = 0.001, upper = 1000)
   tau_field <- 1 / field_var
 
@@ -508,14 +383,6 @@ for (depth_str in names(priors)) {
                      global(likelihood_se, "min", na.rm = TRUE)[1,1],
                      global(likelihood_se, "max", na.rm = TRUE)[1,1],
                      global(likelihood_se, "mean", na.rm = TRUE)[1,1]))
-  log_message(sprintf("    Weight factor range: %.2f - %.2f (mean: %.2f)",
-                     global(weight_factor_safe, "min", na.rm = TRUE)[1,1],
-                     global(weight_factor_safe, "max", na.rm = TRUE)[1,1],
-                     global(weight_factor_safe, "mean", na.rm = TRUE)[1,1]))
-  log_message(sprintf("    Adjusted likelihood SE range: %.2f - %.2f (mean: %.2f)",
-                     global(likelihood_se_adjusted, "min", na.rm = TRUE)[1,1],
-                     global(likelihood_se_adjusted, "max", na.rm = TRUE)[1,1],
-                     global(likelihood_se_adjusted, "mean", na.rm = TRUE)[1,1]))
 
   # === Bayesian posterior ===
   log_message("  Computing posterior...")
@@ -687,8 +554,7 @@ cat("========================================\n\n")
 
 cat(sprintf("Likelihood method: %s\n", toupper(likelihood_method)))
 cat(sprintf("Depths processed: %s\n", paste(summary_df$depth, collapse = ", ")))
-cat(sprintf("Sample locations: %d\n", nrow(sample_locations)))
-cat(sprintf("Precision weighting: %s\n\n", BAYESIAN_WEIGHT_METHOD))
+cat(sprintf("Sample locations: %d\n\n", nrow(sample_locations)))
 
 cat("Uncertainty Reduction:\n")
 for (i in 1:nrow(summary_df)) {
@@ -708,8 +574,7 @@ if (is.na(overall_reduction) || is.nan(overall_reduction)) {
   cat("  Check input data quality (priors and likelihood SE)\n")
   cat("  Possible issues:\n")
   cat("    - Prior SE files may have incorrect units or values\n")
-  cat("    - Likelihood SE files may be missing or invalid\n")
-  cat("    - Sample density calculation may have failed\n\n")
+  cat("    - Likelihood SE files may be missing or invalid\n\n")
 } else if (overall_reduction >= MIN_INFORMATION_GAIN_PCT) {
   cat(sprintf("✓ Information gain exceeds threshold (>%.0f%%)\n", MIN_INFORMATION_GAIN_PCT))
   cat("  Prior was informative - Bayesian update successful\n\n")
