@@ -2,21 +2,24 @@
 # MODULE 06C: BAYESIAN POSTERIOR ESTIMATION (Part 4 - Optional)
 # ============================================================================
 # PURPOSE: Combine Bayesian priors with field data to generate posterior estimates
+#          of carbon stocks (kg/m²) at VM0033 standard depths
 #
 # PREREQUISITES:
-#   - Module 00C: Bayesian prior setup
+#   - Module 00C: Bayesian prior setup (carbon stocks kg/m²)
 #   - Modules 01-03: Data collection and harmonization
-#   - Modules 04-05: RF/Kriging predictions (likelihood)
+#   - Modules 04-05: RF/Kriging predictions (likelihood - carbon stocks kg/m²)
 #
-# THEORY: Bayesian Update
-#   Prior × Likelihood → Posterior
+# THEORY: Bayesian Update for Carbon Stocks
+#   Prior × Likelihood → Posterior (all in kg/m² units)
 #
 #   Precision-weighted average:
 #   τ_prior = 1 / σ²_prior
-#   τ_field = 1 / σ²_field (adjusted by sample density)
+#   τ_field = 1 / σ²_field
 #
 #   μ_posterior = (τ_prior × μ_prior + τ_field × μ_field) / (τ_prior + τ_field)
 #   σ²_posterior = 1 / (τ_prior + τ_field)
+#
+# IMPORTANT: All data are carbon stocks (kg/m²), NOT SOC concentrations (g/kg)
 #
 # INPUTS:
 #   - data_prior/carbon_stock_prior_mean_*.tif (from Module 00C - carbon stocks kg/m²)
@@ -84,7 +87,7 @@ dir.create("outputs/predictions/posterior", recursive = TRUE, showWarnings = FAL
 dir.create("diagnostics/bayesian", recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
-# LOAD FIELD DATA (for sample density calculation)
+# LOAD FIELD DATA (for reference and logging)
 # ============================================================================
 
 log_message("\nLoading field sample locations...")
@@ -194,75 +197,18 @@ if (length(priors) == 0) {
 }
 
 # ============================================================================
-# CALCULATE SAMPLE DENSITY
+# SETUP COMPLETE - READY FOR BAYESIAN UPDATE
 # ============================================================================
 
-log_message("\nCalculating sample density for precision weighting...")
+log_message("\nPreparing for Bayesian posterior estimation...")
+log_message("  Prior source: GEE SoilGrids + Sothe et al. (if available)")
+log_message("  Likelihood source: RF/Kriging spatial predictions")
+log_message("  Method: Precision-weighted Bayesian update")
+log_message(sprintf("  Sample locations: %d", nrow(sample_locations)))
 
-# Use first prior raster as template
-template_raster <- priors[[1]]$mean
-
-# Create raster grid
-grid_extent <- ext(template_raster)
-grid_res <- res(template_raster)[1]
-
-# Calculate kernel density of samples
-# Use bandwidth = 1000m (1km radius for local sample density)
-bandwidth <- 1000
-
-# Get sample coordinates in template CRS
-sample_coords <- st_coordinates(samples_sf)
-
-# Create sample density raster
-sample_density <- template_raster
-sample_density[] <- 0
-
-# For each pixel, count samples within bandwidth
-log_message(sprintf("Computing sample density (bandwidth = %d m)...", bandwidth))
-
-# Simplified approach: for each sample, increment nearby pixels
-for (i in 1:nrow(sample_coords)) {
-  # Create buffer around sample
-  sample_buffer <- st_buffer(samples_sf[i, ], dist = bandwidth)
-
-  # Rasterize buffer
-  buffer_rast <- rasterize(vect(sample_buffer), template_raster, fun = "sum")
-
-  # Add to density
-  sample_density <- sample_density + buffer_rast
-}
-
-# Normalize by total samples
-sample_density <- sample_density / nrow(samples_sf)
-
-log_message("Sample density calculated")
-
-# Calculate weighting factor based on sample density
-# Options: sqrt_samples, linear, fixed
-if (BAYESIAN_WEIGHT_METHOD == "sqrt_samples") {
-  # Square root of relative density
-  mean_density <- global(sample_density, "mean", na.rm = TRUE)[1, 1]
-  weight_factor <- sqrt(sample_density / mean_density)
-
-  log_message("Using sqrt-sample weighting")
-
-} else if (BAYESIAN_WEIGHT_METHOD == "linear") {
-  # Linear weighting
-  mean_density <- global(sample_density, "mean", na.rm = TRUE)[1, 1]
-  weight_factor <- sample_density / mean_density
-
-  log_message("Using linear weighting")
-
-} else {
-  # Fixed weight
-  weight_factor <- template_raster
-  weight_factor[] <- BAYESIAN_FIXED_WEIGHT
-
-  log_message(sprintf("Using fixed weight: %.2f", BAYESIAN_FIXED_WEIGHT))
-}
-
-# Constrain weights to reasonable range [0.1, 2.0]
-weight_factor <- clamp(weight_factor, lower = 0.1, upper = 2.0)
+# Note: We use RF/Kriging SE directly as likelihood uncertainty
+# This already reflects model confidence based on cross-validation
+# No additional sample density weighting needed - keeps it simple and robust
 
 # ============================================================================
 # BAYESIAN UPDATE FOR EACH DEPTH
@@ -281,6 +227,30 @@ for (depth_str in names(priors)) {
   # === Load prior ===
   prior_mean <- priors[[depth_str]]$mean
   prior_se <- priors[[depth_str]]$se
+
+  # Validate prior data
+  log_message("  Validating prior data...")
+  prior_mean_stats <- global(prior_mean, c("min", "max", "mean"), na.rm = TRUE)
+  prior_se_stats <- global(prior_se, c("min", "max", "mean"), na.rm = TRUE)
+
+  n_valid_prior <- sum(!is.na(values(prior_mean, mat = FALSE)))
+  n_total_prior <- length(values(prior_mean, mat = FALSE))
+
+  log_message(sprintf("    Prior mean: min=%.2f, max=%.2f, mean=%.2f (%d/%d valid cells)",
+                     prior_mean_stats[1,1], prior_mean_stats[1,2], prior_mean_stats[1,3],
+                     n_valid_prior, n_total_prior))
+  log_message(sprintf("    Prior SE: min=%.2f, max=%.2f, mean=%.2f",
+                     prior_se_stats[1,1], prior_se_stats[1,2], prior_se_stats[1,3]))
+
+  if (n_valid_prior == 0) {
+    log_message("  ERROR: Prior raster has no valid values - skipping depth", "ERROR")
+    next
+  }
+
+  if (is.na(prior_se_stats[1,3]) || prior_se_stats[1,3] <= 0) {
+    log_message("  ERROR: Prior SE has no valid values or all zeros - skipping depth", "ERROR")
+    next
+  }
 
   # === Load likelihood (field data - carbon stocks in kg/m²) ===
   # Note: Files use rounded depths (7.5→8, 22.5→22) in filenames
@@ -315,7 +285,7 @@ for (depth_str in names(priors)) {
   }
 
   if (!file.exists(likelihood_mean_file)) {
-    log_message(sprintf("  Likelihood mean not found: %s", basename(likelihood_mean_file)), "WARNING")
+    log_message(sprintf("  ERROR: Likelihood mean not found: %s", basename(likelihood_mean_file)), "ERROR")
     next
   }
 
@@ -324,8 +294,32 @@ for (depth_str in names(priors)) {
   if (file.exists(likelihood_se_file)) {
     likelihood_se <- rast(likelihood_se_file)
   } else {
-    log_message("  SE not found - using 15% of mean", "WARNING")
+    log_message("  WARNING: SE not found - using 15% of mean", "WARNING")
     likelihood_se <- likelihood_mean * 0.15
+  }
+
+  # Validate likelihood data
+  log_message("  Validating likelihood data...")
+  likelihood_mean_stats <- global(likelihood_mean, c("min", "max", "mean"), na.rm = TRUE)
+  likelihood_se_stats <- global(likelihood_se, c("min", "max", "mean"), na.rm = TRUE)
+
+  n_valid_likelihood <- sum(!is.na(values(likelihood_mean, mat = FALSE)))
+  n_total_likelihood <- length(values(likelihood_mean, mat = FALSE))
+
+  log_message(sprintf("    Likelihood mean: min=%.2f, max=%.2f, mean=%.2f (%d/%d valid cells)",
+                     likelihood_mean_stats[1,1], likelihood_mean_stats[1,2], likelihood_mean_stats[1,3],
+                     n_valid_likelihood, n_total_likelihood))
+  log_message(sprintf("    Likelihood SE: min=%.2f, max=%.2f, mean=%.2f",
+                     likelihood_se_stats[1,1], likelihood_se_stats[1,2], likelihood_se_stats[1,3]))
+
+  if (n_valid_likelihood == 0) {
+    log_message("  ERROR: Likelihood raster has no valid values - skipping depth", "ERROR")
+    next
+  }
+
+  if (is.na(likelihood_se_stats[1,3]) || likelihood_se_stats[1,3] <= 0) {
+    log_message("  ERROR: Likelihood SE has no valid values or all zeros - skipping depth", "ERROR")
+    next
   }
 
   # Ensure spatial alignment
@@ -335,15 +329,60 @@ for (depth_str in names(priors)) {
     likelihood_se <- resample(likelihood_se, prior_se, method = "bilinear")
   }
 
-  # === Adjust field precision by sample density ===
-  log_message("  Adjusting field precision by sample density...")
+  # Check for spatial overlap after resampling
+  log_message("  Checking spatial overlap...")
+  # Create a mask of overlapping non-NA cells
+  overlap_mask <- !is.na(prior_mean) & !is.na(likelihood_mean) &
+                  !is.na(prior_se) & !is.na(likelihood_se)
+  n_overlap <- sum(values(overlap_mask, mat = FALSE), na.rm = TRUE)
 
-  # Higher sample density → lower SE (higher precision)
-  likelihood_se_adjusted <- likelihood_se / weight_factor
+  log_message(sprintf("    Overlapping valid cells: %d", n_overlap))
+
+  if (n_overlap == 0) {
+    log_message("  ERROR: No spatial overlap between prior and likelihood - check study areas", "ERROR")
+    log_message("    Prior extent:", "ERROR")
+    log_message(sprintf("      %s", as.character(ext(prior_mean))), "ERROR")
+    log_message("    Likelihood extent:", "ERROR")
+    log_message(sprintf("      %s", as.character(ext(likelihood_mean))), "ERROR")
+    next
+  }
 
   # === Calculate precisions (inverse variance) ===
-  tau_prior <- 1 / (prior_se^2)
-  tau_field <- 1 / (likelihood_se_adjusted^2)
+  # Add safeguards to prevent Inf/NaN
+  log_message("  Computing Bayesian precisions...")
+
+  prior_var <- prior_se^2
+  prior_var <- clamp(prior_var, lower = 0.001, upper = 1000)  # Prevent extreme values
+  tau_prior <- 1 / prior_var
+
+  field_var <- likelihood_se^2
+  field_var <- clamp(field_var, lower = 0.001, upper = 1000)
+  tau_field <- 1 / field_var
+
+  # Check for invalid precisions
+  if (any(is.na(values(tau_prior, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  WARNING: Prior precision contains NA values", "WARNING")
+  }
+  if (any(is.na(values(tau_field, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  WARNING: Field precision contains NA values", "WARNING")
+  }
+  if (any(is.infinite(values(tau_prior, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  WARNING: Prior precision contains Inf values", "WARNING")
+  }
+  if (any(is.infinite(values(tau_field, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  WARNING: Field precision contains Inf values", "WARNING")
+  }
+
+  # === Diagnostic output ===
+  log_message("  Diagnostics:")
+  log_message(sprintf("    Prior SE range: %.2f - %.2f (mean: %.2f)",
+                     global(prior_se, "min", na.rm = TRUE)[1,1],
+                     global(prior_se, "max", na.rm = TRUE)[1,1],
+                     global(prior_se, "mean", na.rm = TRUE)[1,1]))
+  log_message(sprintf("    Likelihood SE range: %.2f - %.2f (mean: %.2f)",
+                     global(likelihood_se, "min", na.rm = TRUE)[1,1],
+                     global(likelihood_se, "max", na.rm = TRUE)[1,1],
+                     global(likelihood_se, "mean", na.rm = TRUE)[1,1]))
 
   # === Bayesian posterior ===
   log_message("  Computing posterior...")
@@ -353,11 +392,28 @@ for (depth_str in names(priors)) {
                     (tau_prior + tau_field)
 
   # Posterior variance
-  posterior_var <- 1 / (tau_prior + tau_field)
+  tau_total <- tau_prior + tau_field
+  # Safeguard against division by zero
+  tau_total <- clamp(tau_total, lower = 0.001, upper = Inf)
+  posterior_var <- 1 / tau_total
+
+  # Ensure variance is reasonable
+  posterior_var <- clamp(posterior_var, lower = 0.001, upper = 1000)
   posterior_se <- sqrt(posterior_var)
+
+  # Check for NaN/Inf in posterior
+  if (any(is.na(values(posterior_se, mat = FALSE)), na.rm = FALSE)) {
+    log_message("  ERROR: Posterior SE contains NA values - check input data", "ERROR")
+  }
+  if (any(is.infinite(values(posterior_se, mat = FALSE)), na.rm = TRUE)) {
+    log_message("  ERROR: Posterior SE contains Inf values - check input data", "ERROR")
+  }
 
   # Conservative estimate (95% CI lower bound for VM0033)
   posterior_conservative <- posterior_mean - qnorm((1 + CONFIDENCE_LEVEL) / 2) * posterior_se
+
+  # Ensure non-negative carbon stocks
+  posterior_conservative <- clamp(posterior_conservative, lower = 0, upper = Inf)
 
   # === Information gain ===
   # How much did field data reduce uncertainty?
@@ -367,15 +423,18 @@ for (depth_str in names(priors)) {
   # === Save outputs ===
   log_message("  Saving posterior rasters...")
 
+  # Format depth for filename (7.5 → 7_5) to match prior file naming
+  depth_str_file <- gsub("\\.", "_", sprintf("%.1f", depth))
+
   # Output files: carbon stock posterior estimates (kg/m²)
   out_mean <- file.path("outputs/predictions/posterior",
-                        sprintf("carbon_stock_posterior_mean_%.1fcm.tif", depth))
+                        sprintf("carbon_stock_posterior_mean_%scm.tif", depth_str_file))
   out_se <- file.path("outputs/predictions/posterior",
-                      sprintf("carbon_stock_posterior_se_%.1fcm.tif", depth))
+                      sprintf("carbon_stock_posterior_se_%scm.tif", depth_str_file))
   out_conservative <- file.path("outputs/predictions/posterior",
-                               sprintf("carbon_stock_posterior_conservative_%.1fcm.tif", depth))
+                               sprintf("carbon_stock_posterior_conservative_%scm.tif", depth_str_file))
   out_info_gain <- file.path("diagnostics/bayesian",
-                            sprintf("information_gain_%.1fcm.tif", depth))
+                            sprintf("information_gain_%scm.tif", depth_str_file))
 
   writeRaster(posterior_mean, out_mean, overwrite = TRUE)
   writeRaster(posterior_se, out_se, overwrite = TRUE)
@@ -425,9 +484,9 @@ for (depth_str in names(priors)) {
 
   comparison_data <- rbind(comparison_data, comp_df)
 
-  log_message(sprintf("  Prior: %.1f ± %.1f g/kg", mean(prior_vals), mean(prior_se_vals)))
-  log_message(sprintf("  Field: %.1f g/kg", mean(field_vals)))
-  log_message(sprintf("  Posterior: %.1f ± %.1f g/kg", mean(post_vals), mean(post_se_vals)))
+  log_message(sprintf("  Prior: %.2f ± %.2f kg/m²", mean(prior_vals), mean(prior_se_vals)))
+  log_message(sprintf("  Field: %.2f kg/m²", mean(field_vals)))
+  log_message(sprintf("  Posterior: %.2f ± %.2f kg/m²", mean(post_vals), mean(post_se_vals)))
   log_message(sprintf("  Uncertainty reduction: %.1f%%", mean(reduction_vals)))
 }
 
@@ -456,8 +515,8 @@ p1 <- ggplot(comparison_data, aes(x = value, fill = estimate)) +
   scale_fill_manual(values = c("Prior" = "#3498db", "Field" = "#e67e22", "Posterior" = "#2ecc71")) +
   labs(
     title = "Bayesian Update: Prior × Likelihood → Posterior",
-    subtitle = sprintf("%s - %s", PROJECT_NAME, likelihood_method),
-    x = "SOC (g/kg)",
+    subtitle = sprintf("%s - %s (Carbon Stocks)", PROJECT_NAME, likelihood_method),
+    x = "Carbon Stock (kg/m²)",
     y = "Density",
     fill = "Estimate"
   ) +
@@ -495,22 +554,28 @@ cat("========================================\n\n")
 
 cat(sprintf("Likelihood method: %s\n", toupper(likelihood_method)))
 cat(sprintf("Depths processed: %s\n", paste(summary_df$depth, collapse = ", ")))
-cat(sprintf("Sample locations: %d\n", nrow(sample_locations)))
-cat(sprintf("Precision weighting: %s\n\n", BAYESIAN_WEIGHT_METHOD))
+cat(sprintf("Sample locations: %d\n\n", nrow(sample_locations)))
 
 cat("Uncertainty Reduction:\n")
 for (i in 1:nrow(summary_df)) {
-  cat(sprintf("  %.1f cm: %.1f%% (%.1f → %.1f g/kg SE)\n",
+  cat(sprintf("  %.1f cm: %.1f%% (%.2f → %.2f kg/m² SE)\n",
               summary_df$depth[i],
               summary_df$uncertainty_reduction_pct[i],
               summary_df$prior_se[i],
               summary_df$posterior_se[i]))
 }
 
-overall_reduction <- mean(summary_df$uncertainty_reduction_pct)
+overall_reduction <- mean(summary_df$uncertainty_reduction_pct, na.rm = TRUE)
 cat(sprintf("\nOverall mean reduction: %.1f%%\n\n", overall_reduction))
 
-if (overall_reduction >= MIN_INFORMATION_GAIN_PCT) {
+# Handle NaN/NA values in comparison
+if (is.na(overall_reduction) || is.nan(overall_reduction)) {
+  cat("⚠ WARNING: Could not calculate uncertainty reduction\n")
+  cat("  Check input data quality (priors and likelihood SE)\n")
+  cat("  Possible issues:\n")
+  cat("    - Prior SE files may have incorrect units or values\n")
+  cat("    - Likelihood SE files may be missing or invalid\n\n")
+} else if (overall_reduction >= MIN_INFORMATION_GAIN_PCT) {
   cat(sprintf("✓ Information gain exceeds threshold (>%.0f%%)\n", MIN_INFORMATION_GAIN_PCT))
   cat("  Prior was informative - Bayesian update successful\n\n")
 } else {

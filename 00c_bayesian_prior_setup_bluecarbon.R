@@ -68,6 +68,129 @@ log_message <- function(msg, level = "INFO") {
   cat(sprintf("%s %s: %s\n", timestamp, level, msg))
 }
 
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+#' Validate prior reliability against field data
+#'
+#' Compares prior carbon stock maps against field measurements to assess
+#' prior quality. Large bias or poor correlation suggests the prior may
+#' need adjustment or should be weighted less in Bayesian analysis.
+#'
+#' @param prior_raster SpatRaster of prior carbon stocks (kg/m²)
+#' @param field_data Data frame with x, y, carbon_stock columns
+#' @param max_bias Maximum acceptable relative bias (default 0.2 = 20%)
+#' @return List with validation metrics
+#'
+#' @details
+#' Validation metrics:
+#' - Bias: Mean difference (prior - field)
+#' - RMSE: Root Mean Square Error
+#' - Relative Bias: abs(bias) / mean(field)
+#' - Correlation: Pearson correlation coefficient
+#'
+#' Interpretation:
+#' - Rel. bias < 10%: Excellent prior
+#' - Rel. bias 10-20%: Good prior
+#' - Rel. bias > 20%: Poor prior - consider re-weighting
+#' - Correlation > 0.5: Prior captures spatial pattern
+#' - Correlation < 0.3: Prior poorly represents field conditions
+#'
+#' @examples
+#' validation <- validate_prior(prior_raster, field_carbon_data)
+#' if (validation$rel_bias > 0.2) {
+#'   # Consider increasing uncertainty inflation
+#' }
+validate_prior <- function(prior_raster, field_data, max_bias = 0.2) {
+
+  log_message("\nValidating prior against field data...", "INFO")
+
+  # Check required columns
+  required_cols <- c("x", "y", "carbon_stock")
+  missing_cols <- setdiff(required_cols, names(field_data))
+
+  if (length(missing_cols) > 0) {
+    log_message(sprintf("Missing columns for validation: %s",
+                       paste(missing_cols, collapse = ", ")), "WARNING")
+    log_message("Skipping prior validation", "WARNING")
+    return(NULL)
+  }
+
+  # Check we have enough field data
+  if (nrow(field_data) < 5) {
+    log_message(sprintf("Too few field samples for validation (n=%d, need >= 5)",
+                       nrow(field_data)), "WARNING")
+    return(NULL)
+  }
+
+  tryCatch({
+    # Extract prior values at field locations
+    field_coords <- field_data[, c("x", "y")]
+    prior_values <- terra::extract(prior_raster, field_coords)[, 2]
+
+    # Remove NA pairs
+    valid_idx <- !is.na(prior_values) & !is.na(field_data$carbon_stock)
+    prior_vals <- prior_values[valid_idx]
+    field_vals <- field_data$carbon_stock[valid_idx]
+
+    if (length(prior_vals) < 5) {
+      log_message("Too few valid extraction points after NA removal", "WARNING")
+      return(NULL)
+    }
+
+    # Calculate validation metrics
+    bias <- mean(prior_vals - field_vals, na.rm = TRUE)
+    rmse <- sqrt(mean((prior_vals - field_vals)^2, na.rm = TRUE))
+    rel_bias <- abs(bias) / mean(field_vals, na.rm = TRUE)
+    correlation <- cor(prior_vals, field_vals, use = "complete.obs")
+
+    # Log results
+    log_message(sprintf("Prior Validation Metrics (n=%d):", length(prior_vals)), "INFO")
+    log_message(sprintf("  Bias: %.2f kg/m²", bias), "INFO")
+    log_message(sprintf("  RMSE: %.2f kg/m²", rmse), "INFO")
+    log_message(sprintf("  Relative Bias: %.1f%%", rel_bias * 100), "INFO")
+    log_message(sprintf("  Correlation: %.3f", correlation), "INFO")
+
+    # Interpret results
+    if (rel_bias > max_bias) {
+      log_message(
+        sprintf("WARNING: Prior shows %.1f%% bias (threshold: %.1f%%)",
+               rel_bias * 100, max_bias * 100),
+        "WARNING"
+      )
+      log_message("  Consider increasing PRIOR_UNCERTAINTY_INFLATION in config", "WARNING")
+    } else if (rel_bias > 0.1) {
+      log_message("  Prior shows moderate bias - acceptable for Bayesian analysis", "INFO")
+    } else {
+      log_message("  ✓ Prior shows low bias - excellent agreement with field data", "INFO")
+    }
+
+    if (correlation < 0.3) {
+      log_message(
+        "WARNING: Low correlation with field data - prior may not capture spatial patterns",
+        "WARNING"
+      )
+    } else if (correlation < 0.5) {
+      log_message("  Prior shows moderate correlation with field data", "INFO")
+    } else {
+      log_message("  ✓ Prior shows good correlation with field data", "INFO")
+    }
+
+    return(list(
+      bias = bias,
+      rmse = rmse,
+      rel_bias = rel_bias,
+      correlation = correlation,
+      n_samples = length(prior_vals)
+    ))
+
+  }, error = function(e) {
+    log_message(sprintf("Prior validation failed: %s", e$message), "ERROR")
+    return(NULL)
+  })
+}
+
 log_message("=== MODULE 00C: BAYESIAN PRIOR SETUP ===")
 log_message(sprintf("Project: %s", PROJECT_NAME))
 
@@ -372,6 +495,28 @@ log_message("Saved: prior_metadata.csv")
 # Save depth-specific metadata
 write_csv(processed_files, file.path(BAYESIAN_PRIOR_DIR, "prior_depth_summary.csv"))
 log_message("Saved: prior_depth_summary.csv")
+
+# ============================================================================
+# OPTIONAL: VALIDATE PRIORS AGAINST FIELD DATA
+# ============================================================================
+
+# If you have field carbon stock data, validate priors to assess quality
+# Uncomment and modify the code below to run validation:
+#
+# # Load field data (modify path and columns as needed)
+# field_carbon <- read.csv("data_processed/core_totals.csv") %>%
+#   mutate(carbon_stock = carbon_stock_0_100cm_kg_m2) %>%  # Total 0-100cm stock
+#   select(x, y, carbon_stock) %>%
+#   filter(!is.na(carbon_stock))
+#
+# # Validate each depth's prior (example for 7.5cm depth)
+# prior_7.5cm <- rast(file.path(BAYESIAN_PRIOR_DIR, "carbon_stock_prior_mean_7.5cm.tif"))
+# validation_7.5cm <- validate_prior(prior_7.5cm, field_carbon, max_bias = 0.2)
+#
+# # If validation shows high bias, consider:
+# # 1. Increasing PRIOR_UNCERTAINTY_INFLATION in config (default 1.2)
+# # 2. Using different prior data sources
+# # 3. Reducing prior weight in Bayesian analysis
 
 # ============================================================================
 # SUMMARY

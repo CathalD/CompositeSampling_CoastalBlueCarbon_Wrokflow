@@ -66,9 +66,11 @@ optional_packages <- c(
   "corrplot",    # Correlation plots
   "lubridate",   # Date handling
   "aqp",         # Soil profile analysis
+  "ithir",       # TRUE equal-area spline for depth harmonization
   "caret",       # ML framework
   "knitr",       # Report generation
-  "viridis"      # Color palettes
+  "viridis",     # Color palettes
+  "isotree"      # Isolation forest for outlier detection
 )
 
 cat(sprintf("Required packages: %d\n", length(required_packages)))
