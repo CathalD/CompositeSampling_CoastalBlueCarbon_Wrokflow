@@ -9,13 +9,14 @@
 # PROJECT METADATA (Canadian Grassland Standards)
 # ============================================================================
 
-PROJECT_NAME <- "Canadian_Grassland_Carbon_2024"
-PROJECT_SCENARIO <- "PROJECT"  # Options: BASELINE, PROJECT, CONTROL, DEGRADED, RESTORED
+PROJECT_NAME <- "Alberta_Mixed_Grassland_Carbon_2024"
+PROJECT_SCENARIO <- "PROJECT"  # Options: BASELINE, PROJECT, CONTROL, DEGRADED, RESTORED, NATIVE
 MONITORING_YEAR <- 2024
 
 # Project location (for documentation)
-PROJECT_LOCATION <- "Alberta/Saskatchewan/Manitoba Prairie Grasslands, Canada"
-PROJECT_DESCRIPTION <- "Grassland carbon monitoring for carbon credit development - VM0026/VM0032/VM0042 compliant assessment of prairie and managed grassland soil organic carbon"
+# Update this to your specific region
+PROJECT_LOCATION <- "Mixed Grass Natural Subregion, Southern Alberta, Canada"
+PROJECT_DESCRIPTION <- "Grassland soil organic carbon monitoring for improved grazing management - VM0032 compliant assessment with baseline comparison for carbon offset generation under Alberta TIER protocol"
 
 # ============================================================================
 # ECOSYSTEM STRATIFICATION - GRASSLAND TYPES
@@ -116,14 +117,28 @@ REPORTING_DEPTHS <- list(
 INPUT_CRS <- 4326  # EPSG:4326 (WGS84)
 
 # Processing CRS (projected, equal-area for accurate calculations)
-# Optimized for Canadian Prairies:
-PROCESSING_CRS <- 3347 # EPSG:3347 Canada Albers Equal Area (RECOMMENDED for prairie provinces)
+# ALBERTA-SPECIFIC (update for your province):
+PROCESSING_CRS <- 3400  # EPSG:3400 NAD83(CSRS) / Alberta 10-TM (Resource)
 
-# Alternative CRS options for specific provinces:
-#   - 3402: NAD83(CSRS) / Alberta 10-TM (Forest) - Alberta specific
-#   - 2955: NAD83(CSRS) / UTM zone 13N - Saskatchewan
-#   - 3347: Canada Albers Equal Area (good for all prairie provinces)
-#   - 2957: NAD83(CSRS) / UTM zone 14N - Manitoba
+# PROVINCIAL CRS OPTIONS:
+#
+# ALBERTA (choose based on project location):
+#   - 3400: NAD83(CSRS) / Alberta 10-TM (Resource) - RECOMMENDED for AB grasslands
+#   - 3402: NAD83(CSRS) / Alberta 10-TM (Forest) - Northern AB
+#   - 32612: WGS84 / UTM zone 12N - Southern AB
+#
+# SASKATCHEWAN:
+#   - 2955: NAD83(CSRS) / UTM zone 13N - RECOMMENDED for SK grasslands
+#   - 2151: NAD83(CSRS) / Saskatchewan Central
+#
+# MANITOBA:
+#   - 2957: NAD83(CSRS) / UTM zone 14N - RECOMMENDED for MB grasslands
+#   - 3158: NAD83(CSRS) / UTM zone 15N - Eastern MB
+#
+# MULTI-PROVINCE or NATIONAL:
+#   - 3347: Canada Albers Equal Area - Best for projects spanning provinces
+#
+# For carbon accounting, use equal-area projections to ensure accurate area calculations
 
 # ============================================================================
 # BULK DENSITY DEFAULTS BY GRASSLAND STRATUM
@@ -284,14 +299,31 @@ GRAZING_COMPLIANCE_THRESHOLDS <- list(
   max_utilization_pct = 50          # Maximum forage utilization %
 )
 
+# Root biomass calculation (optional for comprehensive carbon accounting)
+# Grasslands store 60-80% of carbon belowground
+INCLUDE_ROOT_BIOMASS <- FALSE  # Set TRUE to add root carbon to total stocks
+
 # Root:shoot ratio estimates (for full carbon accounting)
+# Based on Canadian grassland literature
 ROOT_SHOOT_RATIOS <- list(
-  "Native Prairie" = 4.0,           # High belowground allocation
-  "Improved Pasture" = 2.5,         # Moderate belowground
-  "Degraded Grassland" = 1.5,       # Reduced root biomass
-  "Restored Grassland" = 3.0,       # Recovering root systems
-  "Riparian Grassland" = 3.5        # High productivity
+  "Native Prairie" = 4.0,           # High belowground allocation (80% belowground)
+  "Improved Pasture" = 2.5,         # Moderate belowground (71% belowground)
+  "Degraded Grassland" = 1.5,       # Reduced root biomass (60% belowground)
+  "Restored Grassland" = 3.0,       # Recovering root systems (75% belowground)
+  "Riparian Grassland" = 3.5        # High productivity (78% belowground)
 )
+
+# Root carbon concentration (% of root biomass that is carbon)
+ROOT_CARBON_CONCENTRATION <- 0.42  # 42% (typical for grassland roots)
+
+# Root biomass sampling depth (cm)
+ROOT_BIOMASS_DEPTH <- 30  # Focus on top 30 cm where most roots occur
+
+# Root biomass calculation method
+ROOT_BIOMASS_METHOD <- "ratio"  # Options: "ratio" (from shoot biomass), "direct" (measured)
+
+# If using "direct" method, root biomass should be in core_samples.csv as "root_biomass_g_m2"
+# If using "ratio" method, aboveground biomass (ANPP) needed in core_locations.csv
 
 # Canadian agricultural baseline scenarios (for additionality)
 BASELINE_SCENARIOS <- c(

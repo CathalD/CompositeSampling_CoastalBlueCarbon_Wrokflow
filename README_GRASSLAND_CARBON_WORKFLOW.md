@@ -3,7 +3,7 @@
 
 **Version:** 1.0 (Adapted from Blue Carbon Workflow)
 **Last Updated:** November 2024
-**Compliance:** VM0026, VM0032, VM0042, Alberta TIER, Canadian Agricultural GHG Methodology (IPCC Tier 3)
+**Compliance:** VM0026, VM0032, VM0042, Alberta TIER, Canadian IPCC Tier 3, ECCC NIR, Provincial Standards
 
 ---
 
@@ -19,7 +19,7 @@ This workflow provides a complete analysis pipeline for grassland carbon project
 - Riparian Grassland (wetland margins, higher moisture)
 
 ### **Key Features:**
-✅ **Multiple Protocol Compliance** - VM0026, VM0032, VM0042, Alberta TIER
+✅ **Multiple Protocol Compliance** - VM0026, VM0032, VM0042, TIER, ECCC, Provincial
 ✅ **Grassland-Specific Depths** - Focus on 0-30 cm active layer, full profile to 100 cm
 ✅ **Canadian Context** - Alberta/Saskatchewan/Manitoba parameters and data sources
 ✅ **Management Variables** - Grazing history, species composition, soil texture
@@ -70,6 +70,23 @@ This workflow provides a complete analysis pipeline for grassland carbon project
   - 95% confidence intervals
   - Canadian CRS and data sources
   - Target precision ≤20% relative error
+
+### **ECCC (Environment and Climate Change Canada) - National Inventory**
+- **Application:** Reporting to Canada's National Inventory Report (NIR)
+- **Key Requirements:**
+  - IPCC land use category classification
+  - Compatible with NIR reporting format
+  - QA/QC procedures following ECCC standards
+  - Alignment with Canada's GHG inventory methodology
+
+### **Provincial Standards (Alberta Example)**
+- **Application:** Provincial reporting and biodiversity objectives
+- **Key Requirements:**
+  - Natural subregion classification (Alberta Natural Regions)
+  - Provincial SOC baseline reference values
+  - Grazing management aligned with provincial guidelines
+  - Native prairie retention for biodiversity co-benefits
+  - **Note:** Adapt for Saskatchewan and Manitoba provincial standards as needed
 
 ---
 
@@ -308,11 +325,86 @@ browseURL("outputs/reports/comprehensive_grassland_standards_report.html")
 ```
 
 The report includes:
-- ✅ VM0026, VM0032, VM0042, TIER, Canadian IPCC compliance checks
+- ✅ VM0026, VM0032, VM0042, TIER, Canadian IPCC, ECCC, Provincial compliance checks
 - 📊 Carbon stocks by grassland stratum
 - 📈 Cross-validation performance
 - ⚠️ Actionable recommendations
 - 📋 Data quality summary
+
+---
+
+## 📁 FILE NAMING CONVENTIONS
+
+### **Why Module Files Still Say "bluecarbon"**
+
+The workflow modules (01-07) retain their original `*_bluecarbon.R` naming from the coastal blue carbon workflow. **This is intentional** for the following reasons:
+
+1. **Code Compatibility:** Modules read parameters from the configuration file at runtime
+2. **Minimal Changes:** Same analytical methods work for both ecosystems
+3. **Flexibility:** Easy to switch between blue carbon and grassland projects
+
+### **How Grassland Adaptation Works**
+
+```r
+# The ONLY change needed:
+source("grassland_carbon_config.R")  # Instead of blue_carbon_config.R
+
+# Then run modules as-is:
+source("01_data_prep_bluecarbon.R")
+source("03_depth_harmonization_bluecarbon.R")
+source("05_raster_predictions_rf_bluecarbon.R")
+# etc.
+```
+
+**What happens:**
+- Module reads `GRASSLAND_DEPTH_MIDPOINTS` instead of `VM0033_DEPTH_MIDPOINTS`
+- Module uses `VALID_STRATA` with grassland types
+- Module applies grassland BD defaults and QC thresholds
+- Module uses grassland covariates (GDD, precipitation, clay)
+
+### **Grassland-Specific Files**
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `grassland_carbon_config.R` | **NEW** grassland configuration | ✅ Required |
+| `07b_comprehensive_standards_report_grassland.R` | **NEW** grassland standards | ✅ Recommended |
+| `01_data_prep_bluecarbon.R` | Data preparation | Works with grassland config |
+| `02_exploratory_analysis_bluecarbon.R` | EDA | Works with grassland config |
+| `03_depth_harmonization_bluecarbon.R` | Depth harmonization | Works with grassland config |
+| `05_raster_predictions_rf_bluecarbon.R` | Spatial modeling | Works with grassland config |
+| `06_carbon_stock_calculation_bluecarbon.R` | Carbon stocks | Works with grassland config |
+
+### **Output File Naming**
+
+Output files will automatically reflect your ecosystem based on config variables:
+
+```
+outputs/
+├── carbon_stocks/
+│   ├── carbon_stocks_conservative_vm0026_rf.csv  # Uses VM0026 (grassland)
+│   └── carbon_stocks_by_stratum.csv
+├── predictions/
+│   └── rf/
+│       ├── soc_rf_0_15cm.tif
+│       └── soc_rf_15_30cm.tif
+└── reports/
+    └── comprehensive_grassland_standards_report.html  # Grassland-specific
+```
+
+### **Optional: Rename for Clarity**
+
+If you prefer grassland-specific module names, you can copy and rename:
+
+```bash
+# Optional - create grassland-specific copies
+cp 01_data_prep_bluecarbon.R 01_data_prep_grassland.R
+cp 03_depth_harmonization_bluecarbon.R 03_depth_harmonization_grassland.R
+# etc.
+
+# Then update source("grassland_carbon_config.R") in each file
+```
+
+**Recommendation:** Keep original naming for easier updates and bug fixes from the main workflow.
 
 ---
 
@@ -522,7 +614,7 @@ source("09_additionality_temporal_analysis.R")
 **Workflow Version:** 1.0 (November 2024)
 **Adapted From:** Blue Carbon Composite Sampling Workflow
 **Developed For:** Canadian Grassland Carbon Projects
-**Compliance:** VM0026, VM0032, VM0042, Alberta TIER, Canadian IPCC Tier 3
+**Compliance:** VM0026, VM0032, VM0042, Alberta TIER, Canadian IPCC Tier 3, ECCC NIR, Provincial Standards
 
 **Citation:**
 ```

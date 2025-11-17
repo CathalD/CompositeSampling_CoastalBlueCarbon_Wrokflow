@@ -395,17 +395,35 @@ canada_ipcc_criteria <- list(
     ),
     list(
       criterion = "Canadian spatial context",
-      threshold = "Canadian CRS and data sources",
+      threshold = "Canadian provincial CRS",
       check_function = function(data) {
-        is_canadian_crs <- PROCESSING_CRS == 3347  # Canada Albers
+        # Canadian CRS codes (provincial and national)
+        canadian_crs <- c(
+          3347,  # Canada Albers
+          3400, 3402,  # Alberta 10-TM
+          2955, 2151,  # Saskatchewan
+          2957, 3158,  # Manitoba
+          32612, 32613, 32614, 32615  # UTM zones covering prairies
+        )
+
+        is_canadian_crs <- PROCESSING_CRS %in% canadian_crs
+
+        crs_name <- switch(as.character(PROCESSING_CRS),
+          "3347" = "Canada Albers",
+          "3400" = "Alberta 10-TM Resource",
+          "3402" = "Alberta 10-TM Forest",
+          "2955" = "Saskatchewan UTM 13N",
+          "2957" = "Manitoba UTM 14N",
+          sprintf("UTM zone %d", PROCESSING_CRS)
+        )
 
         message <- if (is_canadian_crs) {
-          sprintf("Canadian CRS used (EPSG:%d)", PROCESSING_CRS)
+          sprintf("Canadian CRS used: EPSG:%d (%s)", PROCESSING_CRS, crs_name)
         } else {
-          sprintf("INFO: Non-Canadian CRS used (EPSG:%d)", PROCESSING_CRS)
+          sprintf("WARNING: Non-Canadian CRS (EPSG:%d) - consider using provincial CRS", PROCESSING_CRS)
         }
 
-        list(pass = TRUE, value = PROCESSING_CRS, message = message)
+        list(pass = is_canadian_crs, value = PROCESSING_CRS, message = message)
       }
     ),
     list(
@@ -439,13 +457,132 @@ canada_ipcc_criteria <- list(
   )
 )
 
+# ECCC (Environment and Climate Change Canada) - National GHG Inventory
+eccc_criteria <- list(
+  name = "ECCC - National GHG Inventory Standards",
+  requirements = list(
+    list(
+      criterion = "Grassland land use classification",
+      threshold = "IPCC land use categories",
+      check_function = function(data) {
+        # Check if grassland types align with IPCC categories
+        # Grassland remaining grassland vs. Land converted to grassland
+        message <- "INFO: Verify land use classification matches IPCC categories (Grassland Remaining Grassland or Land Converted to Grassland)"
+
+        list(pass = NA, value = "N/A", message = message)
+      }
+    ),
+    list(
+      criterion = "NIR reporting compatibility",
+      threshold = "Compatible with National Inventory Report format",
+      check_function = function(data) {
+        # Check if data can be reported in NIR format
+        message <- "INFO: Ensure data format compatible with Canada's National Inventory Report (NIR) requirements"
+
+        list(pass = NA, value = "N/A", message = message)
+      }
+    ),
+    list(
+      criterion = "QA/QC procedures",
+      threshold = "ECCC QA/QC standards",
+      check_function = function(data) {
+        has_qc <- !is.null(data$cores) && nrow(data$cores) > 0
+
+        message <- if (has_qc) {
+          "QA/QC data available (verify against ECCC standards)"
+        } else {
+          "WARNING: No QA/QC data found"
+        }
+
+        list(pass = has_qc, value = has_qc, message = message)
+      }
+    )
+  )
+)
+
+# Provincial Standards (Alberta example - adapt for SK, MB as needed)
+provincial_criteria <- list(
+  name = "Alberta Provincial Grassland Standards",
+  requirements = list(
+    list(
+      criterion = "Natural subregion classification",
+      threshold = "Alberta Natural Regions",
+      check_function = function(data) {
+        # Check if project location matches Alberta natural subregions
+        # Grassland: Dry Mixedgrass, Mixed Grassland, Northern Fescue, Foothills Fescue
+        message <- sprintf("INFO: Project location: %s. Verify alignment with Alberta Natural Subregions classification",
+                          PROJECT_LOCATION)
+
+        list(pass = NA, value = "N/A", message = message)
+      }
+    ),
+    list(
+      criterion = "Provincial SOC baselines",
+      threshold = "Alberta soil carbon reference values",
+      check_function = function(data) {
+        if (is.null(data$carbon_stocks)) return(list(pass = FALSE, value = NA, message = "No carbon stock data"))
+
+        # Check if SOC values are within Alberta grassland range
+        # Alberta mixed grassland: typically 40-70 Mg C/ha (0-30 cm)
+        stocks_0_30 <- data$carbon_stocks %>%
+          filter(stratum != "ALL") %>%
+          pull(mean_stock_0_30_Mg_ha)
+
+        alberta_range <- stocks_0_30 >= 30 && stocks_0_30 <= 90
+
+        message <- if (all(alberta_range, na.rm = TRUE)) {
+          sprintf("SOC values within Alberta grassland range (%.1f-%.1f Mg C/ha)",
+                  min(stocks_0_30, na.rm = TRUE), max(stocks_0_30, na.rm = TRUE))
+        } else {
+          "WARNING: Some SOC values outside typical Alberta grassland range (30-90 Mg C/ha 0-30cm)"
+        }
+
+        list(pass = all(alberta_range, na.rm = TRUE), value = mean(stocks_0_30, na.rm = TRUE),
+             message = message)
+      }
+    ),
+    list(
+      criterion = "Grazing management documentation (provincial)",
+      threshold = "Alberta sustainable grazing guidelines",
+      check_function = function(data) {
+        # Check for grazing management data
+        message <- "INFO: Verify grazing practices align with Alberta Beef Producers Environmental Stewardship guidelines"
+
+        list(pass = NA, value = "N/A", message = message)
+      }
+    ),
+    list(
+      criterion = "Native prairie retention",
+      threshold = "Provincial biodiversity objectives",
+      check_function = function(data) {
+        # Check if native prairie reference sites are included
+        has_native <- if (!is.null(data$cores)) {
+          "Native Prairie" %in% unique(data$cores$stratum)
+        } else {
+          FALSE
+        }
+
+        message <- if (has_native) {
+          "Native prairie reference sites included (supports provincial conservation objectives)"
+        } else {
+          "INFO: Consider including native prairie reference for biodiversity co-benefits"
+        }
+
+        list(pass = has_native, value = has_native, message = message)
+      }
+    )
+  )
+)
+
 # Store all grassland standards
 all_standards <- list(
   VM0026 = vm0026_criteria,
   VM0032 = vm0032_criteria,
   VM0042 = vm0042_criteria,
   Alberta_TIER = alberta_tier_criteria,
-  Canada_IPCC = canada_ipcc_criteria
+  Canada_IPCC = canada_ipcc_criteria,
+  ECCC = eccc_criteria,
+  Provincial = provincial_criteria
 )
 
 # ============================================================================
@@ -861,7 +998,7 @@ tr:nth-child(even) {
 <p><strong>Monitoring Year:</strong> %d</p>
 <p><strong>Report Generated:</strong> %s</p>
 <p><strong>Location:</strong> %s</p>
-<p><strong>Standards:</strong> VM0026, VM0032, VM0042, Alberta TIER, Canadian IPCC Tier 3</p>
+<p><strong>Standards:</strong> VM0026, VM0032, VM0042, Alberta TIER, Canadian IPCC Tier 3, ECCC NIR, Provincial</p>
 </div>
 
 <h2>Executive Summary</h2>
