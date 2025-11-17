@@ -81,6 +81,11 @@ GRASSLAND_DEPTH_INTERVALS <- data.frame(
   thickness_cm = c(15, 15, 20, 50)
 )
 
+# COMPATIBILITY ALIASES: Allow existing modules to work with grassland config
+# These aliases enable seamless ecosystem switching without module code changes
+VM0033_DEPTH_INTERVALS <- GRASSLAND_DEPTH_INTERVALS
+VM0033_DEPTH_MIDPOINTS <- GRASSLAND_DEPTH_MIDPOINTS
+
 # OPTIONAL: Fine-scale depth intervals for management effects
 # Include shallow depths (0-5, 5-10 cm) to capture surface management impacts
 FINE_SCALE_DEPTHS_GRASSLAND <- c(0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100)
@@ -220,6 +225,14 @@ GRASSLAND_CV_THRESHOLD <- 30  # percent
 
 # Assumed CV for sample size calculation (conservative estimate)
 GRASSLAND_ASSUMED_CV <- 35  # percent (higher than marine systems due to management variability)
+
+# COMPATIBILITY ALIASES: Module integration
+# These ensure existing blue carbon modules work seamlessly with grassland config
+VM0033_MIN_CORES <- max(VM0026_MIN_CORES, VM0032_MIN_CORES, VM0042_MIN_CORES)  # Use strictest requirement
+VM0033_TARGET_PRECISION <- GRASSLAND_TARGET_PRECISION
+VM0033_ASSUMED_CV <- GRASSLAND_ASSUMED_CV
+VM0033_CV_THRESHOLD <- GRASSLAND_CV_THRESHOLD
+VM0033_MONITORING_FREQUENCY <- GRASSLAND_MONITORING_FREQUENCY
 
 # ============================================================================
 # CANADIAN GRASSLAND DATA SOURCES
