@@ -23,12 +23,16 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00b_setup_directories.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Create log file
 log_file <- file.path("logs", paste0("mmrv_reporting_", Sys.Date(), ".log"))
@@ -41,6 +45,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 07: MMRV REPORTING & VERIFICATION ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Load required packages
 suppressPackageStartupMessages({
@@ -190,9 +195,18 @@ kriging_cv <- tryCatch({
   NULL
 })
 
-# Harmonized core data (updated path from Module 03)
+# Harmonized core data - try ecosystem-aware naming
 cores_harmonized <- tryCatch({
-  readRDS("data_processed/cores_harmonized_bluecarbon.rds")
+  if (file.exists("data_processed/cores_harmonized_grassland.rds")) {
+    log_message("Loading cores_harmonized_grassland.rds")
+    readRDS("data_processed/cores_harmonized_grassland.rds")
+  } else if (file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
+    log_message("Loading cores_harmonized_bluecarbon.rds")
+    readRDS("data_processed/cores_harmonized_bluecarbon.rds")
+  } else {
+    log_message("Harmonized core data not found", "WARNING")
+    NULL
+  }
 }, error = function(e) {
   log_message("Could not load harmonized core data", "WARNING")
   NULL

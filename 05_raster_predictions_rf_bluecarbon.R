@@ -16,12 +16,16 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00b_setup_directories.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Create log file
 log_file <- file.path("logs", paste0("rf_predictions_", Sys.Date(), ".log"))
@@ -34,6 +38,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 05: RANDOM FOREST PREDICTIONS ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Load required packages
 suppressPackageStartupMessages({
@@ -176,11 +181,17 @@ calculate_cv_metrics <- function(observed, predicted) {
 
 log_message("Loading harmonized data...")
 
-if (!file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
+# Try ecosystem-aware file naming
+harmonized_file <- if (file.exists("data_processed/cores_harmonized_grassland.rds")) {
+  "data_processed/cores_harmonized_grassland.rds"
+} else if (file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
+  "data_processed/cores_harmonized_bluecarbon.rds"
+} else {
   stop("Harmonized data not found. Run Module 03 first.")
 }
 
-cores_harmonized <- readRDS("data_processed/cores_harmonized_bluecarbon.rds")
+log_message(sprintf("Loading harmonized data from: %s", basename(harmonized_file)))
+cores_harmonized <- readRDS(harmonized_file)
 
 # Filter to standard depths and valid QA
 cores_standard <- cores_harmonized %>%
@@ -309,30 +320,68 @@ if (!dir.exists(gee_strata_dir)) {
 
   log_message("\nValidating GEE export files...")
 
+  # Check if GEE strata directory exists
+  if (!dir.exists(gee_strata_dir)) {
+    dir.create(gee_strata_dir, recursive = TRUE)
+    log_message(sprintf("Created directory: %s", gee_strata_dir), "INFO")
+  }
+
   stratum_mapping$file_exists <- FALSE
   stratum_mapping$file_path <- NA
 
+  # Validate each expected file
+  validation_results <- data.frame(
+    stratum = stratum_mapping$stratum_name,
+    expected_file = stratum_mapping$gee_file,
+    full_path = file.path(gee_strata_dir, stratum_mapping$gee_file),
+    exists = FALSE,
+    stringsAsFactors = FALSE
+  )
+
   for (i in 1:nrow(stratum_mapping)) {
     file_path <- file.path(gee_strata_dir, stratum_mapping$gee_file[i])
+    file_exists <- file.exists(file_path)
 
-    if (file.exists(file_path)) {
-      stratum_mapping$file_exists[i] <- TRUE
-      stratum_mapping$file_path[i] <- file_path
-      log_message(sprintf("  ✓ Found: %s (%s)",
-                         stratum_mapping$stratum_name[i],
-                         stratum_mapping$gee_file[i]))
-    } else {
-      log_message(sprintf("  ⚠ Missing: %s (expected: %s)",
-                         stratum_mapping$stratum_name[i],
-                         stratum_mapping$gee_file[i]), "WARNING")
+    stratum_mapping$file_exists[i] <- file_exists
+    stratum_mapping$file_path[i] <- ifelse(file_exists, file_path, NA)
+    validation_results$exists[i] <- file_exists
+
+    status <- if (file_exists) "✓ FOUND" else "✗ MISSING"
+    level <- if (file_exists) "INFO" else "WARNING"
+
+    log_message(sprintf("  %s: %s",
+                       stratum_mapping$gee_file[i],
+                       status), level)
+
+    if (!file_exists) {
+      log_message(sprintf("    Expected at: %s", file_path), "WARNING")
     }
+  }
+
+  # Check for missing files
+  missing_count <- sum(!validation_results$exists)
+
+  # Option 1: Strict validation (fail if ANY files missing) - controlled by config
+  REQUIRE_ALL_STRATA <- if (exists("REQUIRE_ALL_STRATA_FILES")) REQUIRE_ALL_STRATA_FILES else FALSE
+
+  if (REQUIRE_ALL_STRATA && missing_count > 0) {
+    error_msg <- sprintf(
+      "\n❌ VALIDATION FAILED: Missing %d stratum mask files.\n\nPlease export from GEE using this naming convention:\n%s\n\nExpected location: %s/\n\nTo proceed with partial strata, set REQUIRE_ALL_STRATA_FILES=FALSE in config.",
+      missing_count,
+      paste(sprintf("  '%s' → %s",
+                    validation_results$stratum[!validation_results$exists],
+                    validation_results$expected_file[!validation_results$exists]),
+            collapse="\n"),
+      gee_strata_dir
+    )
+    stop(error_msg)
   }
 
   # Filter to only strata with available files
   available_strata <- stratum_mapping[stratum_mapping$file_exists, ]
 
   if (nrow(available_strata) == 0) {
-    log_message(sprintf("No GEE stratum files found in %s!", gee_strata_dir), "WARNING")
+    log_message(sprintf("\n❌ No GEE stratum files found in %s!", gee_strata_dir), "WARNING")
     log_message(sprintf("Expected files: %s",
                        paste(stratum_mapping$gee_file, collapse=", ")), "WARNING")
     log_message("RF will proceed without stratum covariate", "WARNING")
@@ -344,8 +393,13 @@ if (!dir.exists(gee_strata_dir)) {
       log_message(sprintf("\n⚠ WARNING: %d strata missing GEE files (will skip these):",
                          nrow(missing_strata)), "WARNING")
       for (i in 1:nrow(missing_strata)) {
-        log_message(sprintf("    - %s", missing_strata$stratum_name[i]), "WARNING")
+        log_message(sprintf("    - %s → %s",
+                           missing_strata$stratum_name[i],
+                           missing_strata$gee_file[i]), "WARNING")
       }
+      log_message(sprintf("\nSet REQUIRE_ALL_STRATA_FILES=TRUE in config to fail on missing files"), "INFO")
+    } else {
+      log_message(sprintf("\n✓ All %d stratum mask files found", nrow(validation_results)), "INFO")
     }
 
     log_message(sprintf("\nProceeding with %d available strata: %s",

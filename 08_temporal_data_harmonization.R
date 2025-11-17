@@ -18,19 +18,23 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00_setup_bluecarbon.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Verify required config variables
 required_vars <- c("VALID_SCENARIOS", "MIN_YEARS_FOR_CHANGE",
                    "ADDITIONALITY_CONFIDENCE", "PROCESSING_CRS")
 missing_vars <- required_vars[!sapply(required_vars, exists)]
 if (length(missing_vars) > 0) {
-  stop(sprintf("Configuration error: Missing required variables: %s\nPlease check blue_carbon_config.R",
+  stop(sprintf("Configuration error: Missing required variables: %s\nPlease check config file",
                paste(missing_vars, collapse=", ")))
 }
 
@@ -46,6 +50,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 08: TEMPORAL DATA HARMONIZATION ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Load packages
 suppressPackageStartupMessages({

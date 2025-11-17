@@ -59,6 +59,36 @@ dir.create("outputs/reports", recursive = TRUE, showWarnings = FALSE)
 dir.create("outputs/reports/figures", recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
+# VALIDATION FUNCTIONS
+# ============================================================================
+
+# Validate carbon stocks data structure
+validate_carbon_stocks <- function(carbon_stocks) {
+
+  required_cols <- c(
+    "stratum",
+    "mean_stock_0_100_Mg_ha",
+    "conservative_stock_0_100_Mg_ha",
+    "mean_stock_0_30_Mg_ha",  # Primary for grassland
+    "total_stock_0_100_Mg"
+  )
+
+  missing_cols <- setdiff(required_cols, names(carbon_stocks))
+
+  if (length(missing_cols) > 0) {
+    log_message(sprintf("WARNING: Carbon stocks missing expected columns: %s",
+                        paste(missing_cols, collapse=", ")), "WARNING")
+    log_message(sprintf("Available columns: %s",
+                        paste(names(carbon_stocks), collapse=", ")), "INFO")
+    return(FALSE)
+  }
+
+  return(TRUE)
+}
+
+log_message("Validation functions defined")
+
+# ============================================================================
 # GRASSLAND STANDARDS COMPLIANCE CRITERIA
 # ============================================================================
 
@@ -672,6 +702,16 @@ for (method in c("rf", "kriging")) {
 }
 
 log_message("Data loading complete")
+
+# Validate loaded carbon stocks data structure
+if (!is.null(workflow_data$carbon_stocks)) {
+  log_message("\nValidating carbon stocks data structure...")
+  if (!validate_carbon_stocks(workflow_data$carbon_stocks)) {
+    log_message("Carbon stocks validation failed - some checks may fail", "WARNING")
+  } else {
+    log_message("Carbon stocks validation passed")
+  }
+}
 
 # ============================================================================
 # RUN COMPLIANCE CHECKS FOR ALL STANDARDS

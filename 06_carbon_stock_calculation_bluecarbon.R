@@ -23,12 +23,16 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00b_setup_directories.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Create log file
 log_file <- file.path("logs", paste0("carbon_stocks_", Sys.Date(), ".log"))
@@ -41,6 +45,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 06: CARBON STOCK CALCULATION & VM0033 COMPLIANCE ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Load required packages
 suppressPackageStartupMessages({
@@ -612,6 +617,151 @@ if (HAS_STRATUM_RASTER) {
 
 } else {
   log_message("\nNo stratum raster available - skipping stratum-level analysis", "WARNING")
+}
+
+# ============================================================================
+# ROOT BIOMASS CARBON CALCULATION (GRASSLAND ECOSYSTEMS)
+# ============================================================================
+
+if (exists("INCLUDE_ROOT_BIOMASS") && INCLUDE_ROOT_BIOMASS) {
+
+  log_message("\n=== ADDING ROOT BIOMASS TO CARBON STOCKS ===")
+
+  if (!exists("ROOT_BIOMASS_METHOD")) {
+    log_message("ROOT_BIOMASS_METHOD not defined, skipping", "WARNING")
+  } else if (ROOT_BIOMASS_METHOD == "direct") {
+
+    # DIRECT METHOD: Use measured root biomass
+    log_message("Using direct root biomass measurements...")
+
+    # Load harmonized cores to get root biomass data
+    harmonized_file <- if (file.exists("data_processed/cores_harmonized_grassland.rds")) {
+      "data_processed/cores_harmonized_grassland.rds"
+    } else if (file.exists("data_processed/cores_harmonized_bluecarbon.rds")) {
+      "data_processed/cores_harmonized_bluecarbon.rds"
+    } else {
+      NULL
+    }
+
+    if (is.null(harmonized_file)) {
+      log_message("Harmonized cores not found - cannot calculate root biomass", "WARNING")
+    } else {
+      cores_harmonized_data <- readRDS(harmonized_file)
+
+      if (!"root_biomass_g_m2" %in% names(cores_harmonized_data)) {
+        stop("ROOT_BIOMASS_METHOD='direct' requires 'root_biomass_g_m2' column in core data")
+      }
+
+      # Calculate root carbon
+      cores_harmonized_data <- cores_harmonized_data %>%
+        mutate(
+          root_carbon_g_m2 = root_biomass_g_m2 * ROOT_CARBON_CONCENTRATION,
+          root_carbon_Mg_ha = root_carbon_g_m2 / 100  # Convert g/m² to Mg/ha
+        )
+
+      # Aggregate by stratum
+      root_stocks_by_stratum <- cores_harmonized_data %>%
+        filter(depth_midpoint_cm <= ROOT_BIOMASS_DEPTH) %>%
+        group_by(stratum) %>%
+        summarise(
+          root_carbon_mean_Mg_ha = mean(root_carbon_Mg_ha, na.rm = TRUE),
+          root_carbon_sd_Mg_ha = sd(root_carbon_Mg_ha, na.rm = TRUE),
+          root_carbon_se_Mg_ha = sd(root_carbon_Mg_ha, na.rm = TRUE) / sqrt(n()),
+          n_cores = n_distinct(core_id),
+          .groups = "drop"
+        )
+    }
+
+  } else if (ROOT_BIOMASS_METHOD == "ratio") {
+
+    # RATIO METHOD: Estimate from shoot biomass using root:shoot ratios
+    log_message("Using root:shoot ratio estimates...")
+
+    # Use stratum-based root:shoot ratios from config
+    if (!exists("ROOT_SHOOT_RATIOS")) {
+      log_message("ROOT_SHOOT_RATIOS not defined in config", "WARNING")
+    } else {
+      stratum_anpp_defaults <- data.frame(
+        stratum = names(ROOT_SHOOT_RATIOS),
+        shoot_biomass_g_m2 = c(300, 400, 150, 250, 350)  # Defaults by stratum
+      )
+
+      root_stocks_by_stratum <- stratum_anpp_defaults %>%
+        mutate(
+          root_shoot_ratio = sapply(stratum, function(s) ROOT_SHOOT_RATIOS[[s]]),
+          root_biomass_g_m2 = shoot_biomass_g_m2 * root_shoot_ratio,
+          root_carbon_g_m2 = root_biomass_g_m2 * ROOT_CARBON_CONCENTRATION,
+          root_carbon_mean_Mg_ha = root_carbon_g_m2 / 100,
+          root_carbon_sd_Mg_ha = root_carbon_mean_Mg_ha * 0.3,  # Assume 30% CV
+          root_carbon_se_Mg_ha = NA,
+          n_cores = 0
+        ) %>%
+        select(stratum, root_carbon_mean_Mg_ha, root_carbon_sd_Mg_ha,
+               root_carbon_se_Mg_ha, n_cores)
+
+      log_message("Using default ANPP values - REPLACE WITH MEASURED DATA", "WARNING")
+    }
+
+  } else {
+    stop(sprintf("Unknown ROOT_BIOMASS_METHOD: %s (use 'direct' or 'ratio')",
+                 ROOT_BIOMASS_METHOD))
+  }
+
+  # Add root biomass to saved stratum statistics
+  if (exists("root_stocks_by_stratum")) {
+    for (method in METHODS_AVAILABLE) {
+      stats_file <- sprintf("outputs/carbon_stocks/carbon_stocks_by_stratum_%s.csv", method)
+
+      if (file.exists(stats_file)) {
+        carbon_stocks_summary <- read.csv(stats_file, stringsAsFactors = FALSE)
+
+        # Aggregate to get total stocks per stratum (sum across depth intervals)
+        stratum_totals <- carbon_stocks_summary %>%
+          group_by(stratum) %>%
+          summarise(
+            mean_stock_0_100_Mg_ha = sum(mean_stock_Mg_ha, na.rm = TRUE),
+            .groups = "drop"
+          )
+
+        # Merge root carbon with soil carbon totals
+        stratum_totals <- stratum_totals %>%
+          left_join(root_stocks_by_stratum, by = "stratum") %>%
+          mutate(
+            # Add root carbon to total stocks
+            total_carbon_with_roots_Mg_ha = mean_stock_0_100_Mg_ha +
+                                             coalesce(root_carbon_mean_Mg_ha, 0),
+            root_fraction_pct = 100 * root_carbon_mean_Mg_ha /
+                                (mean_stock_0_100_Mg_ha + root_carbon_mean_Mg_ha)
+          )
+
+        # Add root biomass columns to original data
+        carbon_stocks_summary <- carbon_stocks_summary %>%
+          left_join(
+            stratum_totals %>%
+              select(stratum, root_carbon_mean_Mg_ha, root_carbon_sd_Mg_ha,
+                     root_carbon_se_Mg_ha, total_carbon_with_roots_Mg_ha, root_fraction_pct),
+            by = "stratum"
+          )
+
+        # Save updated file
+        write.csv(carbon_stocks_summary, stats_file, row.names = FALSE)
+        log_message(sprintf("Updated %s with root biomass data", basename(stats_file)))
+
+        # Log root fractions
+        for (i in 1:nrow(stratum_totals)) {
+          if (!is.na(stratum_totals$root_fraction_pct[i])) {
+            log_message(sprintf("  %s: %.1f%% belowground (%.1f Mg C/ha roots)",
+                                stratum_totals$stratum[i],
+                                stratum_totals$root_fraction_pct[i],
+                                stratum_totals$root_carbon_mean_Mg_ha[i]))
+          }
+        }
+      }
+    }
+  }
+
+} else {
+  log_message("Root biomass calculation disabled (INCLUDE_ROOT_BIOMASS = FALSE or not defined)")
 }
 
 # ============================================================================

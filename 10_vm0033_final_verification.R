@@ -18,12 +18,16 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00_setup_bluecarbon.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Initialize logging
 log_file <- file.path("logs", paste0("final_verification_", Sys.Date(), ".log"))
@@ -37,6 +41,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 10: VM0033 FINAL VERIFICATION PACKAGE ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Load packages
 suppressPackageStartupMessages({

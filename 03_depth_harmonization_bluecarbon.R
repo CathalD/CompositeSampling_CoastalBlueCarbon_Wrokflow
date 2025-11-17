@@ -18,12 +18,16 @@
 # SETUP
 # ============================================================================
 
-# Load configuration
-if (file.exists("blue_carbon_config.R")) {
-  source("blue_carbon_config.R")
+# Load configuration - Auto-detect ecosystem config file
+config_file <- if (file.exists("grassland_carbon_config.R")) {
+  "grassland_carbon_config.R"
+} else if (file.exists("blue_carbon_config.R")) {
+  "blue_carbon_config.R"
 } else {
-  stop("Configuration file not found. Run 00b_setup_directories.R first.")
+  stop("No configuration file found. Run setup script first.")
 }
+
+source(config_file)
 
 # Initialize logging
 log_file <- file.path("logs", paste0("depth_harmonization_", Sys.Date(), ".log"))
@@ -36,6 +40,7 @@ log_message <- function(msg, level = "INFO") {
 }
 
 log_message("=== MODULE 03: DEPTH HARMONIZATION ===")
+log_message(sprintf("Configuration loaded: %s", basename(config_file)))
 
 # Set random seed for reproducibility
 set.seed(BOOTSTRAP_SEED)
@@ -1246,9 +1251,24 @@ log_message("Saved mean profile comparison plots")
 
 log_message("Saving harmonized data...")
 
+# Determine ecosystem suffix for file naming
+ecosystem_suffix <- if (exists("config_file")) {
+  if (grepl("grassland", config_file, ignore.case = TRUE)) {
+    "grassland"
+  } else if (grepl("blue_carbon|bluecarbon", config_file, ignore.case = TRUE)) {
+    "bluecarbon"
+  } else {
+    "bluecarbon"  # default fallback
+  }
+} else {
+  "bluecarbon"  # fallback if config_file variable doesn't exist
+}
+
+log_message(sprintf("Using ecosystem suffix: %s", ecosystem_suffix))
+
 # Save harmonized cores
-saveRDS(harmonized_cores, "data_processed/cores_harmonized_bluecarbon.rds")
-write.csv(harmonized_cores, "data_processed/cores_harmonized_bluecarbon.csv",
+saveRDS(harmonized_cores, sprintf("data_processed/cores_harmonized_%s.rds", ecosystem_suffix))
+write.csv(harmonized_cores, sprintf("data_processed/cores_harmonized_%s.csv", ecosystem_suffix),
           row.names = FALSE)
 
 # Save diagnostics
